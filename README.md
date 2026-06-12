@@ -12,19 +12,24 @@ Your HA YAML lives in a **separate config git repo**. This repo is infrastructur
 - Prod HA reachable on LAN (REST for person sync; SSH for secrets/`.storage` sync)
 - Long-lived API tokens on prod (read) and staging (write)
 
-## Quick start
+## Getting started
+
+**Recommended:** follow [docs/setup.md](docs/setup.md) step by step (topology, secrets, sidecar, optional mirror, staging HA MQTT).
+
+An interactive **onboarding wizard** is planned — design in [docs/design-onboarding-wizard.md](docs/design-onboarding-wizard.md), tracked on [GitHub project #4](https://github.com/users/Unthred/projects/4) and epic [#1](https://github.com/Unthred/ha-staging-kit/issues/1).
 
 ```bash
 git clone https://github.com/Unthred/ha-staging-kit.git
 cd ha-staging-kit
 cp config.example.env .env
-# Edit .env — set HA_CONFIG_REPO, HA_STAGING_CONFIG, prod/staging URLs
+# Edit .env — see docs/setup.md
 
 bash scripts/init-data-dirs.sh
-# Add secrets/data/sidecar/secrets/ha-prod-api.token and ha-staging-api.token
-# Add secrets/data/sidecar/secrets/id_ed25519 for SSH to prod
+# Add $SIDECAR_DATA/secrets/*.token and id_ed25519 — see docs/setup.md
 
-docker compose up -d --build
+bash scripts/deploy.sh                    # sidecar only
+bash scripts/deploy.sh --with-mirror      # sidecar + MQTT mirror
+
 docker exec ha-staging-sidecar /sidecar/sbin/apply-config.sh
 docker exec ha-staging-sidecar /sidecar/sbin/person-poller.sh --once
 ```
@@ -56,14 +61,16 @@ bash scripts/mirror-control-mode.sh off      # always return to read-only after 
 
 ## Roadmap
 
-- Web console (#23 in [HomeAssistant](https://github.com/Unthred/HomeAssistant) config repo)
-- Mirror deploy/init in compose (v0.1 uses manual mirror config setup)
+- **Onboarding wizard** — [#1](https://github.com/Unthred/ha-staging-kit/issues/1) (CLI then web); [project board](https://github.com/users/Unthred/projects/4)
+- **Web console** — [#23](https://github.com/Unthred/HomeAssistant/issues/23) in [HomeAssistant](https://github.com/Unthred/HomeAssistant) config repo
 - Published examples: Unraid, standalone Linux, HA OS + Docker staging
 
 ## Related
 
 - [Unthred/HomeAssistant](https://github.com/Unthred/HomeAssistant) — example HA config repo using this kit
 - [docs/architecture.md](docs/architecture.md)
+- [docs/setup.md](docs/setup.md) — manual setup (until wizard ships)
+- [docs/staging-ha-mqtt.md](docs/staging-ha-mqtt.md) — point staging HA at the mirror broker
 
 ## License
 
