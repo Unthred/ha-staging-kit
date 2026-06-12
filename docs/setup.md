@@ -1,6 +1,8 @@
-# Setup guide (manual — until wizard ships)
+# Setup guide
 
-**Target:** web onboarding wizard in the kit console (see [design-onboarding-wizard.md](design-onboarding-wizard.md)). Until that ships, follow this guide.
+**Recommended:** start the web onboarding wizard — `bash scripts/deploy-console.sh`, then open `http://<host>:8080/` (or your `CONSOLE_PORT`).
+
+Manual steps below if you prefer the CLI path or need to troubleshoot.
 
 For **person / presence sync** (prod read + staging write tokens), see [person-presence-sync.md](person-presence-sync.md).
 

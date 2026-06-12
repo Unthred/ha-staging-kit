@@ -9,3 +9,10 @@ id_rsa
 
 # Editor
 .DS_Store
+
+# Console build artifacts
+console/HaStagingConsole/bin/
+console/HaStagingConsole/obj/
+console/HaStagingConsole/wwwroot/
+console/web/node_modules/
+console/web/dist/

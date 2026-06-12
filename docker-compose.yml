@@ -27,3 +27,20 @@ services:
       - ${MIRROR_DATA}/config:/mosquitto/config
       - ${MIRROR_DATA}/data:/mosquitto/data
       - ${MIRROR_DATA}/log:/mosquitto/log
+
+  ha-staging-console:
+    build: ./console
+    image: ha-staging-console:local
+    container_name: ha-staging-console
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${CONSOLE_PORT:-8080}:8080"
+    volumes:
+      - ${SIDECAR_DATA}:/sidecar-data
+      - .:/kit
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      SIDECAR_DATA: /sidecar-data
+      KIT_ROOT: /kit
+      SIDECAR_CONTAINER: ha-staging-sidecar

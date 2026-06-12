@@ -14,9 +14,9 @@ Your HA YAML lives in a **separate config git repo**. This repo is infrastructur
 
 ## Getting started
 
-**Recommended:** follow [docs/setup.md](docs/setup.md) step by step (topology, secrets, sidecar, optional mirror, staging HA MQTT).
+**Recommended:** use the **web onboarding wizard** at `http://<host>:8080/` after starting the console (see below). Manual steps: [docs/setup.md](docs/setup.md).
 
-A **web onboarding wizard** (console SPA) is planned — design in [docs/design-onboarding-wizard.md](docs/design-onboarding-wizard.md), tracked on [GitHub project #4](https://github.com/users/Unthred/projects/4) and epic [#1](https://github.com/Unthred/ha-staging-kit/issues/1). No CLI wizard; setup in the browser.
+Design: [docs/design-onboarding-wizard.md](docs/design-onboarding-wizard.md) · Epic [#1](https://github.com/Unthred/ha-staging-kit/issues/1) / UI [#6](https://github.com/Unthred/ha-staging-kit/issues/6)
 
 ```bash
 git clone https://github.com/Unthred/ha-staging-kit.git
@@ -27,6 +27,7 @@ cp config.example.env .env
 bash scripts/init-data-dirs.sh
 # Add $SIDECAR_DATA/secrets/*.token and id_ed25519 — see docs/setup.md
 
+bash scripts/deploy-console.sh            # web wizard (recommended first run)
 bash scripts/deploy.sh                    # sidecar only
 bash scripts/deploy.sh --with-mirror      # sidecar + MQTT mirror
 
@@ -38,6 +39,7 @@ docker exec ha-staging-sidecar /sidecar/sbin/person-poller.sh --once
 
 | Service | Role |
 |---------|------|
+| **ha-staging-console** | Web onboarding wizard + future ops dashboard |
 | **ha-staging-sidecar** | Apply git config, runtime overlay, person poll, scheduled `.storage` sync |
 | **mosquitto-mirror** | One-way MQTT state prod → staging (optional control mode for Z2M tests) |
 
@@ -61,7 +63,7 @@ bash scripts/mirror-control-mode.sh off      # always return to read-only after 
 
 ## Roadmap
 
-- **Onboarding wizard (web UI)** — [#1](https://github.com/Unthred/ha-staging-kit/issues/1) / [#6](https://github.com/Unthred/ha-staging-kit/issues/6); [project board](https://github.com/users/Unthred/projects/4)
+- **Onboarding wizard (web UI)** — initial scaffold shipped; polish + dashboard in [#1](https://github.com/Unthred/ha-staging-kit/issues/1) / [#6](https://github.com/Unthred/ha-staging-kit/issues/6)
 - **Web console** — [#23](https://github.com/Unthred/HomeAssistant/issues/23) in [HomeAssistant](https://github.com/Unthred/HomeAssistant) config repo
 - Published examples: Unraid, standalone Linux, HA OS + Docker staging
 
