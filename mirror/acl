@@ -1,0 +1,6 @@
+# Read-only mirror: staging HA reads all topics; writes limited to birth/status only.
+# Command topics (zigbee2mqtt/+/set, cmnd/#) are not allowed — UI toggles fail safely here.
+user homeassistant
+topic read #
+topic write homeassistant/status
+topic write homeassistant/#

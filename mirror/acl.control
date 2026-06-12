@@ -1,0 +1,8 @@
+# Control mode: allow Z2M command publishes (forwarded outbound by bridge allowlist only).
+# homeassistant/# writes stay on mirror — never bridged out.
+user homeassistant
+topic read #
+topic write homeassistant/status
+topic write homeassistant/#
+topic write zigbee2mqtt/+/set
+topic write zigbee2mqtt/+/+/set

@@ -1,0 +1,26 @@
+# AUTO-GENERATED on staging apply — not in shared git config.
+# Written by ha-staging-sidecar to packages/sidecar_generated.yaml
+# Staging runtime overlay: counters, recorder retention, environment marker.
+# Prod uses UI .storage counters instead; do not deploy this file to HA Green.
+recorder:
+  purge_keep_days: 3
+
+input_text:
+  ha_environment:
+    name: HA Environment
+    initial: staging
+    max: 32
+
+counter:
+  warnings:
+    name: Log warnings
+    minimum: 0
+    maximum: 999999
+    step: 1
+    initial: 0
+  errors:
+    name: Log errors
+    minimum: 0
+    maximum: 999999
+    step: 1
+    initial: 0

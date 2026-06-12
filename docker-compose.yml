@@ -1,0 +1,27 @@
+# ha-staging-kit — sidecar + MQTT mirror
+# Copy config.example.env → .env and set paths before: docker compose up -d --build
+
+services:
+  ha-staging-sidecar:
+    build: ./sidecar
+    image: ha-staging-sidecar:local
+    container_name: ha-staging-sidecar
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ${HA_CONFIG_REPO}:/repo:ro
+      - ${HA_STAGING_CONFIG}:/ha-config
+      - ${SIDECAR_DATA}:/sidecar-data
+    environment:
+      SIDECAR_CONFIG: /sidecar-data/config.env
+
+  mosquitto-mirror:
+    image: eclipse-mosquitto:2
+    container_name: mosquitto-mirror
+    restart: unless-stopped
+    ports:
+      - "${MIRROR_PORT:-1883}:1883"
+    volumes:
+      - ${MIRROR_DATA}/config:/mosquitto/config
+      - ${MIRROR_DATA}/data:/mosquitto/data
+      - ${MIRROR_DATA}/log:/mosquitto/log

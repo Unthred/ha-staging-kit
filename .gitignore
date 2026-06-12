@@ -1,0 +1,11 @@
+# Local runtime data (never commit)
+data/
+secrets/
+*.token
+!*.token.example
+.env
+id_ed25519
+id_rsa
+
+# Editor
+.DS_Store
