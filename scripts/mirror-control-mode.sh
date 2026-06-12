@@ -3,6 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+[[ -f "$ROOT/.env" ]] && set -a && source "$ROOT/.env" && set +a
 TEMPLATE_DIR="$ROOT/mirror"
 APP_ROOT="${MIRROR_DATA:-$ROOT/data/mirror}"
 CONFIG_DIR="$APP_ROOT/config"
@@ -32,6 +33,8 @@ read_creds() {
 write_bridge() {
   sed -e "s|__MQTT_USER__|${MQTT_USER}|g" \
       -e "s|__MQTT_PASSWORD__|${MQTT_PASS}|g" \
+      -e "s|__PROD_MQTT_HOST__|${PROD_MQTT_HOST:?Set PROD_MQTT_HOST in .env}|g" \
+      -e "s|__PROD_MQTT_PORT__|${PROD_MQTT_PORT:-1883}|g" \
       "$1" > "$CONFIG_DIR/conf.d/bridge.conf"
   chmod 600 "$CONFIG_DIR/conf.d/bridge.conf"
 }

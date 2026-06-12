@@ -2,6 +2,7 @@
 # Create local data dirs and seed sidecar config from examples.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+[[ -f "$ROOT/.env" ]] && set -a && source "$ROOT/.env" && set +a
 SIDECAR_DATA="${SIDECAR_DATA:-$ROOT/data/sidecar}"
 MIRROR_DATA="${MIRROR_DATA:-$ROOT/data/mirror}"
 SECRETS="$SIDECAR_DATA/secrets"

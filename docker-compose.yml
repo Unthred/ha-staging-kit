@@ -8,6 +8,7 @@ services:
     container_name: ha-staging-sidecar
     restart: unless-stopped
     network_mode: host
+    env_file: .env
     volumes:
       - ${HA_CONFIG_REPO}:/repo:ro
       - ${HA_STAGING_CONFIG}:/ha-config
@@ -19,6 +20,7 @@ services:
     image: eclipse-mosquitto:2
     container_name: mosquitto-mirror
     restart: unless-stopped
+    env_file: .env
     ports:
       - "${MIRROR_PORT:-1883}:1883"
     volumes:
