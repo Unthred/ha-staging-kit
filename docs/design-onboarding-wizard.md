@@ -153,20 +153,22 @@ User confirms: **“I’ve pointed staging HA at the mirror”** (checkbox).
 ### 12. Done
 
 - Summary + “what’s next” (edit HA YAML on staging, promote workflow)
-- Open dashboard (when console exists) or CLI cheat sheet
+- Redirect to **console dashboard** (default landing after first run)
 
 ## Implementation phases
 
 | Phase | Delivery | Repo |
 |-------|----------|------|
-| **A** | `docs/setup.md` manual checklist mirroring wizard | ha-staging-kit |
-| **B** | Interactive CLI wizard (`scripts/onboard.sh`) | ha-staging-kit |
-| **C** | Web onboarding (first-run route in console) | ha-staging-kit |
-| **D** | Re-run / edit settings from console | ha-staging-kit |
+| **A** | Manual docs (`setup.md`, `person-presence-sync.md`, …) | ha-staging-kit |
+| **B** | Console API — onboarding endpoints + validation helpers | ha-staging-kit |
+| **C** | **Web onboarding UI** — first-run wizard SPA (progress bar, test buttons, deploy) | ha-staging-kit |
+| **D** | Re-run / edit settings from console Settings page | ha-staging-kit |
 
-CLI wizard first — ships value before SPA; web reuses same validation API.
+**Web UI only** — no interactive CLI wizard. New users open the console in a browser; the SPA walks through the steps below. Host scripts remain for operators who prefer them, but onboarding is not bash-based.
 
-## API (for web, phase C)
+Depends on console skeleton (HomeAssistant [#24](https://github.com/Unthred/HomeAssistant/issues/24)); onboarding is the **first-run route** of the same SPA as dashboard/settings/operations.
+
+## API (console backend)
 
 ```
 GET  /api/onboarding/status     → step, completed, blockers
@@ -181,6 +183,14 @@ POST /api/onboarding/deploy
 POST /api/onboarding/mirror     → optional
 GET  /api/onboarding/report     → generated summary
 ```
+
+## Web UI (SPA)
+
+- **Route:** `/onboarding` (first visit) → `/` dashboard when complete
+- **Layout:** stepped wizard — sidebar progress, main panel for current step, sticky **Back / Next / Test** actions
+- **Components:** topology radios, path pickers (with “browse” hints for Docker mounts), password-style token fields, SSH key upload, optional mirror card with plain-language explainer, deploy log stream, health-check result cards (green/amber/red)
+- **Aesthetic:** calm, HA-adjacent — cards, status chips, no terminal chrome unless showing deploy logs
+- **Mobile:** usable on phone over LAN for “confirm staging MQTT” step
 
 ## UX principles
 
@@ -199,4 +209,5 @@ Epic and child issues on **Unthred/ha-staging-kit** project board. Linked from H
 
 - [README.md](../README.md)
 - [architecture.md](architecture.md)
+- [person-presence-sync.md](person-presence-sync.md) — why prod read + staging write tokens exist
 - HomeAssistant [design-staging-console.md](https://github.com/Unthred/HomeAssistant/blob/staging/docs/design-staging-console.md)

@@ -1,6 +1,8 @@
 # Setup guide (manual — until wizard ships)
 
-**Target:** interactive onboarding wizard (see [design-onboarding-wizard.md](design-onboarding-wizard.md)).
+**Target:** web onboarding wizard in the kit console (see [design-onboarding-wizard.md](design-onboarding-wizard.md)). Until that ships, follow this guide.
+
+For **person / presence sync** (prod read + staging write tokens), see [person-presence-sync.md](person-presence-sync.md).
 
 ## Before you start
 

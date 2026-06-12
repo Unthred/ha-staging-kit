@@ -16,7 +16,7 @@ Your HA YAML lives in a **separate config git repo**. This repo is infrastructur
 
 **Recommended:** follow [docs/setup.md](docs/setup.md) step by step (topology, secrets, sidecar, optional mirror, staging HA MQTT).
 
-An interactive **onboarding wizard** is planned — design in [docs/design-onboarding-wizard.md](docs/design-onboarding-wizard.md), tracked on [GitHub project #4](https://github.com/users/Unthred/projects/4) and epic [#1](https://github.com/Unthred/ha-staging-kit/issues/1).
+A **web onboarding wizard** (console SPA) is planned — design in [docs/design-onboarding-wizard.md](docs/design-onboarding-wizard.md), tracked on [GitHub project #4](https://github.com/users/Unthred/projects/4) and epic [#1](https://github.com/Unthred/ha-staging-kit/issues/1). No CLI wizard; setup in the browser.
 
 ```bash
 git clone https://github.com/Unthred/ha-staging-kit.git
@@ -61,7 +61,7 @@ bash scripts/mirror-control-mode.sh off      # always return to read-only after 
 
 ## Roadmap
 
-- **Onboarding wizard** — [#1](https://github.com/Unthred/ha-staging-kit/issues/1) (CLI then web); [project board](https://github.com/users/Unthred/projects/4)
+- **Onboarding wizard (web UI)** — [#1](https://github.com/Unthred/ha-staging-kit/issues/1) / [#6](https://github.com/Unthred/ha-staging-kit/issues/6); [project board](https://github.com/users/Unthred/projects/4)
 - **Web console** — [#23](https://github.com/Unthred/HomeAssistant/issues/23) in [HomeAssistant](https://github.com/Unthred/HomeAssistant) config repo
 - Published examples: Unraid, standalone Linux, HA OS + Docker staging
 
@@ -71,6 +71,7 @@ bash scripts/mirror-control-mode.sh off      # always return to read-only after 
 - [docs/architecture.md](docs/architecture.md)
 - [docs/setup.md](docs/setup.md) — manual setup (until wizard ships)
 - [docs/staging-ha-mqtt.md](docs/staging-ha-mqtt.md) — point staging HA at the mirror broker
+- [docs/person-presence-sync.md](docs/person-presence-sync.md) — why and how person/tracker sync works
 
 ## License
 
