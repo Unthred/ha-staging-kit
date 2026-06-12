@@ -12,5 +12,8 @@ public sealed class KitPaths(IConfiguration config)
     public string StagingTokenFile => Path.Combine(SecretsDir, "ha-staging-api.token");
     public string SshKeyFile => Path.Combine(SecretsDir, "id_ed25519");
     public string DeployScript => Path.Combine(KitRoot, "scripts", "deploy.sh");
+    public string DeployMirrorScript => Path.Combine(KitRoot, "scripts", "deploy-mirror.sh");
+    public string MirrorControlScript => Path.Combine(KitRoot, "scripts", "mirror-control-mode.sh");
     public string SidecarContainer { get; } = config["SIDECAR_CONTAINER"] ?? "ha-staging-sidecar";
+    public string MirrorContainer { get; } = config["MIRROR_CONTAINER"] ?? "mosquitto-mirror";
 }

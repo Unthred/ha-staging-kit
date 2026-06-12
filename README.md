@@ -39,11 +39,13 @@ docker exec ha-staging-sidecar /sidecar/sbin/person-poller.sh --once
 
 | Service | Role |
 |---------|------|
-| **ha-staging-console** | Web onboarding wizard + future ops dashboard |
+| **ha-staging-console** | Web onboarding wizard, dashboard, settings, and operations |
 | **ha-staging-sidecar** | Apply git config, runtime overlay, person poll, scheduled `.storage` sync |
 | **mosquitto-mirror** | One-way MQTT state prod → staging (optional control mode for Z2M tests) |
 
 ## Operations
+
+Use the **console** (`http://<host>:8081/` by default) for day-two tasks, or run scripts directly:
 
 ```bash
 docker exec ha-staging-sidecar /sidecar/sbin/apply-config.sh
@@ -52,6 +54,8 @@ docker exec ha-staging-sidecar /sidecar/sbin/sync-storage.sh
 bash scripts/mirror-control-mode.sh status   # read-only | control
 bash scripts/mirror-control-mode.sh off      # always return to read-only after tests
 ```
+
+Console pages: **Dashboard** (status) · **Operations** (apply, sync, mirror mode) · **Settings** · **Setup wizard**
 
 ## Config
 
@@ -63,7 +67,7 @@ bash scripts/mirror-control-mode.sh off      # always return to read-only after 
 
 ## Roadmap
 
-- **Onboarding wizard (web UI)** — initial scaffold shipped; polish + dashboard in [#1](https://github.com/Unthred/ha-staging-kit/issues/1) / [#6](https://github.com/Unthred/ha-staging-kit/issues/6)
+- **Onboarding wizard (web UI)** — shipped; dashboard + settings + operations in console
 - **Web console** — [#23](https://github.com/Unthred/HomeAssistant/issues/23) in [HomeAssistant](https://github.com/Unthred/HomeAssistant) config repo
 - Published examples: Unraid, standalone Linux, HA OS + Docker staging
 

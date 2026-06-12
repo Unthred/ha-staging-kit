@@ -1,3 +1,8 @@
+export type HealthCheck = { name: string; status: string; detail: string };
+export type TestResult = { ok: boolean; message: string };
+export type DeployResult = { ok: boolean; message: string; logTail?: string };
+export type OperationResult = { ok: boolean; message: string; logTail?: string | null };
+
 export type OnboardingStatus = {
   currentStep: number;
   completedSteps: string[];
@@ -17,9 +22,40 @@ export type OnboardingStatus = {
   lastHealthChecks?: HealthCheck[];
 };
 
-export type HealthCheck = { name: string; status: string; detail: string };
-export type TestResult = { ok: boolean; message: string };
-export type DeployResult = { ok: boolean; message: string; logTail?: string };
+export type DashboardStatus = {
+  onboardingComplete: boolean;
+  subsystems: HealthCheck[];
+  sidecar?: {
+    running: boolean;
+    lastPersonSync?: string | null;
+    lastApply?: string | null;
+    lastStorageSync?: string | null;
+    personPollIntervalSeconds: number;
+    storageSyncIntervalSeconds: number;
+  };
+  mirror?: {
+    running: boolean;
+    configured: boolean;
+    mode: string;
+    prodMqttHost?: string | null;
+    prodMqttPort: number;
+  };
+  stagingHaUrl?: string | null;
+};
+
+export type SettingsView = {
+  paths: OnboardingStatus["paths"];
+  prod: OnboardingStatus["prod"];
+  staging: OnboardingStatus["staging"];
+  mirror: OnboardingStatus["mirror"];
+  intervals: {
+    personPollIntervalSeconds: number;
+    storageSyncIntervalSeconds: number;
+    applyOnStart: boolean;
+    skipStorageSync: boolean;
+  };
+  stagingHaContainer?: string | null;
+};
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -46,6 +82,7 @@ export const onboardingApi = {
   mirror: (body: OnboardingStatus["mirror"]) =>
     api<OnboardingStatus>("/api/onboarding/mirror", { method: "POST", body: JSON.stringify(body) }),
   confirmHaMqtt: () => api<OnboardingStatus>("/api/onboarding/ha-mqtt-confirmed", { method: "POST" }),
+  skipToDashboard: () => api<OnboardingStatus>("/api/onboarding/skip-to-dashboard", { method: "POST" }),
   testProd: () => api<TestResult>("/api/onboarding/test/prod-api", { method: "POST" }),
   testStaging: () => api<TestResult>("/api/onboarding/test/staging-api", { method: "POST" }),
   testSsh: () => api<TestResult>("/api/onboarding/test/ssh", { method: "POST" }),
@@ -55,4 +92,30 @@ export const onboardingApi = {
   deployMirror: () => api<DeployResult>("/api/onboarding/deploy-mirror", { method: "POST" }),
   health: () => api<HealthCheck[]>("/api/onboarding/health", { method: "POST" }),
   complete: () => api<OnboardingStatus>("/api/onboarding/complete", { method: "POST" }),
+};
+
+export const dashboardApi = {
+  status: () => api<DashboardStatus>("/api/dashboard"),
+};
+
+export const settingsApi = {
+  get: () => api<SettingsView>("/api/settings"),
+  save: (body: SettingsView & {
+    prodUrl: string;
+    prodToken?: string;
+    sshTarget: string;
+    sshPrivateKey?: string;
+    stagingUrl: string;
+    stagingToken?: string;
+  }) => api<SettingsView>("/api/settings", { method: "POST", body: JSON.stringify(body) }),
+};
+
+export const operationsApi = {
+  applyConfig: () => api<OperationResult>("/api/operations/apply-config", { method: "POST" }),
+  personPoll: () => api<OperationResult>("/api/operations/person-poll", { method: "POST" }),
+  storageSync: () => api<OperationResult>("/api/operations/storage-sync", { method: "POST" }),
+  mirrorReadOnly: () => api<OperationResult>("/api/operations/mirror-mode", { method: "POST", body: JSON.stringify({ controlMode: false }) }),
+  mirrorControl: () => api<OperationResult>("/api/operations/mirror-mode", { method: "POST", body: JSON.stringify({ controlMode: true }) }),
+  deployMirror: () => api<OperationResult>("/api/operations/deploy-mirror", { method: "POST" }),
+  restartStaging: () => api<OperationResult>("/api/operations/restart-staging", { method: "POST" }),
 };

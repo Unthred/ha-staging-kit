@@ -38,9 +38,12 @@ services:
       - "${CONSOLE_PORT:-8080}:8080"
     volumes:
       - ${SIDECAR_DATA}:/sidecar-data
+      - ${MIRROR_DATA}:${MIRROR_DATA}
+      - ${HA_STAGING_CONFIG}:${HA_STAGING_CONFIG}:ro
       - .:/kit
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       SIDECAR_DATA: /sidecar-data
       KIT_ROOT: /kit
       SIDECAR_CONTAINER: ha-staging-sidecar
+      MIRROR_CONTAINER: mosquitto-mirror

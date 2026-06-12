@@ -300,3 +300,147 @@ code {
 .error-card {
   margin-top: 4rem;
 }
+
+.app-shell .top-nav {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.top-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.nav-link {
+  color: var(--muted);
+  text-decoration: none;
+  padding: 0.45rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font-size: 0.9rem;
+}
+
+.nav-link.active,
+.nav-link:hover {
+  color: var(--text);
+  background: var(--surface);
+  border-color: var(--border);
+}
+
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.page-header h2 {
+  margin: 0;
+}
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.stat-card,
+.section-card {
+  padding: 1rem 1.15rem;
+}
+
+.stat-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+}
+
+.stat-card h3,
+.section-card h3 {
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+}
+
+.detail-list {
+  display: grid;
+  gap: 0.65rem;
+  margin: 0;
+}
+
+.detail-list dt {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.detail-list dd {
+  margin: 0.15rem 0 0;
+  font-size: 0.9rem;
+  word-break: break-word;
+}
+
+.banner {
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius);
+  margin-bottom: 1rem;
+  border: 1px solid var(--border);
+}
+
+.banner-warn {
+  background: rgba(255, 183, 77, 0.12);
+  border-color: rgba(255, 183, 77, 0.35);
+}
+
+.banner-danger {
+  background: rgba(239, 83, 80, 0.12);
+  border-color: rgba(239, 83, 80, 0.35);
+}
+
+.bootstrap-banner {
+  margin-top: 1rem;
+  padding: 0.85rem 1rem;
+  border-radius: 8px;
+  background: rgba(3, 169, 244, 0.1);
+  border: 1px solid rgba(3, 169, 244, 0.25);
+}
+
+.btn.danger {
+  background: var(--err);
+  color: #fff;
+  font-weight: 600;
+}
+
+.confirm-box {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid rgba(239, 83, 80, 0.35);
+  border-radius: 8px;
+  background: rgba(239, 83, 80, 0.08);
+}
+
+.ops-grid .action-block {
+  margin-bottom: 0.65rem;
+}
+
+.settings-form h3 {
+  margin: 1.25rem 0 0.75rem;
+  font-size: 1rem;
+}
+
+.settings-form h3:first-child {
+  margin-top: 0;
+}
+
+.action-block {
+  margin-bottom: 0.75rem;
+}
