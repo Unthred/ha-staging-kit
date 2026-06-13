@@ -2,10 +2,18 @@ using HaStagingConsole.Models;
 
 namespace HaStagingConsole.Services;
 
-public sealed class OperationsService(KitPaths paths, DockerRunner docker)
+public sealed class OperationsService(KitPaths paths, SidecarRunner sidecar, DockerRunner docker)
 {
-    public Task<OperationResult> ApplyConfigAsync(CancellationToken ct) =>
-        RunSidecarScript("/sidecar/sbin/apply-config.sh", "Apply config", ct);
+    public Task<OperationResult> ApplyConfigAsync(CancellationToken ct)
+    {
+        if (!Directory.Exists("/repo/.git"))
+            return Task.FromResult(new OperationResult(
+                false,
+                "Git repo not configured — set the HA config repo path in Settings and complete the setup wizard paths step",
+                null));
+
+        return RunSidecarScript("/sidecar/sbin/apply-config.sh", "Apply config", ct);
+    }
 
     public Task<OperationResult> PersonPollAsync(CancellationToken ct) =>
         RunSidecarScript("/sidecar/sbin/person-poller.sh --once", "Person poll", ct);
@@ -33,31 +41,16 @@ public sealed class OperationsService(KitPaths paths, DockerRunner docker)
         if (string.IsNullOrWhiteSpace(container))
             return new OperationResult(false, "STAGING_HA_CONTAINER not set in .env", null);
 
-        var psi = new System.Diagnostics.ProcessStartInfo("docker")
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false
-        };
-        psi.ArgumentList.Add("restart");
-        psi.ArgumentList.Add(container);
-
-        using var proc = System.Diagnostics.Process.Start(psi);
-        if (proc is null)
-            return new OperationResult(false, "Failed to start docker", null);
-        var stdout = await proc.StandardOutput.ReadToEndAsync(ct);
-        var stderr = await proc.StandardError.ReadToEndAsync(ct);
-        await proc.WaitForExitAsync(ct);
-        var msg = string.IsNullOrWhiteSpace(stdout) ? stderr.Trim() : stdout.Trim();
-        return new OperationResult(proc.ExitCode == 0, proc.ExitCode == 0 ? $"Restarted {container}" : "Restart failed", msg);
+        var (ok, msg) = await docker.RestartContainerAsync(container, ct);
+        return new OperationResult(ok, ok ? $"Restarted {container}" : "Restart failed", msg);
     }
 
     async Task<OperationResult> RunSidecarScript(string script, string label, CancellationToken ct)
     {
-        if (!await docker.IsContainerRunningAsync(paths.SidecarContainer, ct))
-            return new OperationResult(false, "Sidecar container is not running", null);
+        if (!await sidecar.IsSyncLoopRunningAsync(ct))
+            return new OperationResult(false, $"Config sync loop is not running — check {paths.SyncLogLocation}", null);
 
-        var (ok, msg) = await docker.DockerExecAsync(paths.SidecarContainer, script, ct);
+        var (ok, msg) = await sidecar.RunScriptAsync(script, ct);
         return new OperationResult(ok, ok ? $"{label} completed" : $"{label} failed", msg);
     }
 }

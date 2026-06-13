@@ -49,20 +49,32 @@ public sealed class OnboardingBootstrap(KitPaths paths, OnboardingStore store, I
             Url = env.GetValueOrDefault("STAGING_HA_URL", sidecar.GetValueOrDefault("STAGING_HA_URL", ""))
         };
 
+        state.Topology = new TopologySettings(
+            FirstNonEmpty(sidecar.GetValueOrDefault("PROD_HA_TYPE"), env.GetValueOrDefault("PROD_HA_TYPE"), "ha_os") ?? "ha_os",
+            FirstNonEmpty(sidecar.GetValueOrDefault("STAGING_HA_TYPE"), env.GetValueOrDefault("STAGING_HA_TYPE"), "docker") ?? "docker",
+            true);
+
         var mqttHost = env.GetValueOrDefault("PROD_MQTT_HOST", "");
         var mqttPort = int.TryParse(env.GetValueOrDefault("PROD_MQTT_PORT", "1883"), out var p) ? p : 1883;
+        var stagingMqttBroker = env.GetValueOrDefault("STAGING_MQTT_BROKER", "");
+        var stagingMqttPort = int.TryParse(env.GetValueOrDefault("STAGING_MQTT_PORT", "1883"), out var sp) ? sp : 1883;
         var mirrorConfigured = !string.IsNullOrWhiteSpace(mqttHost)
             && !string.IsNullOrWhiteSpace(state.Paths.MirrorData)
             && Directory.Exists(Path.Combine(state.Paths.MirrorData, "config"));
 
-        state.Mirror = new MirrorSettings(mirrorConfigured, mqttHost, mqttPort);
+        state.Mirror = new MirrorSettings(
+            mirrorConfigured,
+            mqttHost,
+            mqttPort,
+            stagingMqttBroker,
+            stagingMqttPort);
 
         if (HasExistingConfig(state))
         {
-            state.CurrentStep = 10;
+            state.CurrentStep = 7;
             state.CompletedSteps =
             [
-                "topology", "paths", "prod", "staging", "mirror", "deploy", "storage-sync"
+                "topology", "paths", "prod", "staging", "mirror", "storage"
             ];
             if (mirrorConfigured)
                 state.CompletedSteps.Add("mirror-deploy");
@@ -83,5 +95,16 @@ public sealed class OnboardingBootstrap(KitPaths paths, OnboardingStore store, I
             return secrets.Replace("/secrets.yaml", "").Replace("secrets.yaml", "").TrimEnd('/');
 
         return secrets;
+    }
+
+    static string? FirstNonEmpty(params string?[] values)
+    {
+        foreach (var value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+                return value.Trim();
+        }
+
+        return null;
     }
 }

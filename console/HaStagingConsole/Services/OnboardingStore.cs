@@ -24,7 +24,9 @@ public sealed class OnboardingStore(KitPaths paths, ILogger<OnboardingStore> log
             try
             {
                 var json = File.ReadAllText(paths.OnboardingFile);
-                return JsonSerializer.Deserialize<OnboardingState>(json, JsonOptions) ?? new OnboardingState();
+                var state = JsonSerializer.Deserialize<OnboardingState>(json, JsonOptions) ?? new OnboardingState();
+                MigrateStepState(state);
+                return state;
             }
             catch (Exception ex)
             {
@@ -44,9 +46,17 @@ public sealed class OnboardingStore(KitPaths paths, ILogger<OnboardingStore> log
         }
     }
 
-    public OnboardingStatus ToStatus(OnboardingState state)
+    public OnboardingStatus ToStatus(
+        OnboardingState state,
+        bool? mirrorRunning = null,
+        DetectedSetupSnapshot? detected = null)
     {
         RefreshSecretFlags(state);
+        var gitConfigured = Directory.Exists("/repo/.git");
+        var mirrorData = state.Paths.MirrorData;
+        var mirrorConfigured = !string.IsNullOrWhiteSpace(mirrorData)
+            && File.Exists(Path.Combine(mirrorData, "config", "mosquitto.conf"));
+
         return new OnboardingStatus(
             state.CurrentStep,
             state.CompletedSteps,
@@ -57,7 +67,11 @@ public sealed class OnboardingStore(KitPaths paths, ILogger<OnboardingStore> log
             state.Staging with { HasToken = File.Exists(paths.StagingTokenFile) },
             state.Mirror,
             state.HaMqttConfirmed,
-            state.LastHealthChecks);
+            state.LastHealthChecks,
+            gitConfigured,
+            mirrorConfigured,
+            mirrorRunning ?? false,
+            detected);
     }
 
     void RefreshSecretFlags(OnboardingState state)
@@ -76,5 +90,23 @@ public sealed class OnboardingStore(KitPaths paths, ILogger<OnboardingStore> log
             state.CompletedSteps.Add(stepId);
         state.CurrentStep = nextStep;
         Save(state);
+    }
+
+    static void MigrateStepState(OnboardingState state)
+    {
+        if (state.CompletedSteps.Remove("deploy") && state.CurrentStep > 6)
+            state.CurrentStep--;
+
+        if (state.CompletedSteps.Remove("storage-sync"))
+            state.CompletedSteps.Add("storage");
+
+        // Consolidated mirror-deploy + ha-mqtt into the single mirror wizard step.
+        if (state.CompletedSteps.Contains("mirror-deploy") && !state.CompletedSteps.Contains("mirror"))
+            state.CompletedSteps.Add("mirror");
+
+        if (!state.IsComplete && state.CurrentStep >= 9)
+            state.CurrentStep = 8;
+        else if (!state.IsComplete && state.CurrentStep == 8 && state.CompletedSteps.Contains("mirror"))
+            state.CurrentStep = 7;
     }
 }

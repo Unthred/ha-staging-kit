@@ -16,3 +16,5 @@ console/HaStagingConsole/obj/
 console/HaStagingConsole/wwwroot/
 console/web/node_modules/
 console/web/dist/
+.deploy-cache/
+console/web/tsconfig.tsbuildinfo

@@ -1,8 +1,8 @@
 # ha-staging-kit
 
-OS-agnostic Docker stack for **Home Assistant staging**: sidecar (git apply, person sync, `.storage` sync) + optional **MQTT mirror** (prod → staging state).
+OS-agnostic Docker stack for **Home Assistant staging**: web UI, config sync, and optional MQTT mirror — **one container**.
 
-Your HA YAML lives in a **separate config git repo**. This repo is infrastructure only.
+Your HA YAML lives in a **separate config git repo**. This repo is infrastructure only — it applies git to **staging** (workbench); **prod HA** is live truth for the running home.
 
 ## Prerequisites
 
@@ -14,9 +14,7 @@ Your HA YAML lives in a **separate config git repo**. This repo is infrastructur
 
 ## Getting started
 
-**Recommended:** use the **web onboarding wizard** at `http://<host>:8080/` after starting the console (see below). Manual steps: [docs/setup.md](docs/setup.md).
-
-Design: [docs/design-onboarding-wizard.md](docs/design-onboarding-wizard.md) · Epic [#1](https://github.com/Unthred/ha-staging-kit/issues/1) / UI [#6](https://github.com/Unthred/ha-staging-kit/issues/6)
+**Recommended:** use the **web onboarding wizard** at `http://<host>:8081/` after deploy. Manual steps: [docs/setup.md](docs/setup.md).
 
 ```bash
 git clone https://github.com/Unthred/ha-staging-kit.git
@@ -27,57 +25,46 @@ cp config.example.env .env
 bash scripts/init-data-dirs.sh
 # Add $SIDECAR_DATA/secrets/*.token and id_ed25519 — see docs/setup.md
 
-bash scripts/deploy-console.sh            # web wizard (recommended first run)
-bash scripts/deploy.sh                    # sidecar only
-bash scripts/deploy.sh --with-mirror      # sidecar + MQTT mirror
+bash scripts/deploy.sh                 # one image: web + sync
+bash scripts/deploy.sh --with-mirror   # + MQTT mirror config
 
-docker exec ha-staging-sidecar /sidecar/sbin/apply-config.sh
-docker exec ha-staging-sidecar /sidecar/sbin/person-poller.sh --once
+# Faster redeploys after the first full build:
+bash scripts/deploy-quick.sh ui        # React/UI only (~1–2 min)
+bash scripts/deploy-quick.sh api       # C# API only (~2–3 min)
+bash scripts/deploy-quick.sh full      # same as deploy.sh (~5–8 min)
+
+docker exec ha-staging-kit /sidecar/sbin/apply-config.sh
+docker exec ha-staging-kit tail -f /sidecar-data/sync.log
 ```
 
-## Components
+## Single container
 
-| Service | Role |
-|---------|------|
-| **ha-staging-console** | Web onboarding wizard, dashboard, settings, and operations |
-| **ha-staging-sidecar** | Apply git config, runtime overlay, person poll, scheduled `.storage` sync |
-| **mosquitto-mirror** | One-way MQTT state prod → staging (optional control mode for Z2M tests) |
+| Container | Ports | Runs |
+|-----------|-------|------|
+| **`ha-staging-kit`** | `8081` (web), `1883` (MQTT mirror) | Web UI · config sync loop · optional mosquitto |
+
+One `docker compose build` — no separate web/sync images.
 
 ## Operations
 
-Use the **console** (`http://<host>:8081/` by default) for day-two tasks, or run scripts directly:
+Use the **web UI** (`http://<host>:8081/` by default) or exec into the kit container:
 
 ```bash
-docker exec ha-staging-sidecar /sidecar/sbin/apply-config.sh
-docker exec ha-staging-sidecar /sidecar/sbin/person-poller.sh --once
-docker exec ha-staging-sidecar /sidecar/sbin/sync-storage.sh
-bash scripts/mirror-control-mode.sh status   # read-only | control
-bash scripts/mirror-control-mode.sh off      # always return to read-only after tests
+docker exec ha-staging-kit /sidecar/sbin/apply-config.sh
+docker exec ha-staging-kit /sidecar/sbin/person-poller.sh --once
+docker exec ha-staging-kit /sidecar/sbin/sync-storage.sh
+bash scripts/mirror-control-mode.sh status
 ```
 
-Console pages: **Dashboard** (status) · **Operations** (apply, sync, mirror mode) · **Settings** · **Setup wizard**
+Console pages: **Dashboard** · **Operations** · **Settings** · **Setup wizard**
 
 ## Config
 
 | Path | Purpose |
 |------|---------|
 | `.env` | Host paths and URLs (from `config.example.env`) |
-| `data/sidecar/config.env` | Sidecar runtime (from `sidecar/config.env.example`) |
+| `data/sidecar/config.env` | Sync runtime (from `sidecar/config.env.example`) |
 | `data/sidecar/secrets/` | API tokens + SSH key (gitignored) |
-
-## Roadmap
-
-- **Onboarding wizard (web UI)** — shipped; dashboard + settings + operations in console
-- **Web console** — [#23](https://github.com/Unthred/HomeAssistant/issues/23) in [HomeAssistant](https://github.com/Unthred/HomeAssistant) config repo
-- Published examples: Unraid, standalone Linux, HA OS + Docker staging
-
-## Related
-
-- [Unthred/HomeAssistant](https://github.com/Unthred/HomeAssistant) — example HA config repo using this kit
-- [docs/architecture.md](docs/architecture.md)
-- [docs/setup.md](docs/setup.md) — manual setup (until wizard ships)
-- [docs/staging-ha-mqtt.md](docs/staging-ha-mqtt.md) — point staging HA at the mirror broker
-- [docs/person-presence-sync.md](docs/person-presence-sync.md) — why and how person/tracker sync works
 
 ## License
 

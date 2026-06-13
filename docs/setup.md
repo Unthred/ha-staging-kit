@@ -4,6 +4,10 @@
 
 Manual steps below if you prefer the CLI path or need to troubleshoot.
 
+## Workflow (config-repo)
+
+**Prod HA** runs the home (live truth). **Staging HA** is the workbench. Edit YAML in the config git repo → kit applies `staging` branch → test → merge `main` → GitHub Actions deploys to prod (see config-repo `docs/prod-deploy.md`).
+
 For **person / presence sync** (prod read + staging write tokens), see [person-presence-sync.md](person-presence-sync.md).
 
 ## Before you start

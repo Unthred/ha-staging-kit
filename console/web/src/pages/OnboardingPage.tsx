@@ -1,54 +1,109 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { onboardingApi, type OnboardingStatus } from "../api";
+import { onboardingApi, toApiError, type ApiError, type HealthCheck, type OnboardingStatus } from "../api";
 import { ActionButton } from "../components/ActionButton";
 import { Chip } from "../components/Chip";
+import { LoadErrorPanel } from "../components/LoadErrorPanel";
+import { MqttMirrorInstructions } from "../components/MqttMirrorInstructions";
+import { PathsFormFields } from "../components/PathsFormFields";
+import { PathsHelpPanel } from "../components/PathsHelpPanel";
 import { TestButton } from "../components/TestButton";
 
 const STEPS = [
   { id: "welcome", title: "Welcome" },
   { id: "topology", title: "Topology" },
   { id: "paths", title: "Paths & git" },
-  { id: "prod", title: "Prod connection" },
+  { id: "prod", title: "Production connection" },
   { id: "staging", title: "Staging connection" },
-  { id: "mirror", title: "MQTT mirror" },
-  { id: "deploy", title: "Deploy sidecar" },
   { id: "storage", title: "Storage sync" },
-  { id: "mirror-deploy", title: "Deploy mirror" },
-  { id: "ha-mqtt", title: "Staging HA MQTT" },
+  { id: "mirror", title: "MQTT mirror" },
   { id: "health", title: "Health checks" },
   { id: "done", title: "Done" },
 ] as const;
+
+function resolveVisibleStepIndex(
+  status: OnboardingStatus,
+  visibleSteps: ReadonlyArray<(typeof STEPS)[number]>
+): number {
+  const fullIdx = Math.min(Math.max(status.currentStep, 0), STEPS.length - 1);
+  const stepId = STEPS[fullIdx]?.id;
+  if (stepId) {
+    const visIdx = visibleSteps.findIndex((s) => s.id === stepId);
+    if (visIdx >= 0) return visIdx;
+  }
+  for (let i = 0; i < visibleSteps.length; i++) {
+    if (!status.completedSteps.includes(visibleSteps[i].id)) return i;
+  }
+  return Math.max(visibleSteps.length - 1, 0);
+}
+
+function StepFooter({
+  showBack,
+  onBack,
+  onNext,
+  nextLabel = "Next",
+  showSkip = true,
+  primaryDisabled = false,
+  extraEnd,
+}: {
+  showBack: boolean;
+  onBack: () => void;
+  onNext: () => void;
+  nextLabel?: string;
+  showSkip?: boolean;
+  primaryDisabled?: boolean;
+  extraEnd?: ReactNode;
+}) {
+  return (
+    <footer className="step-footer">
+      <div className="step-footer-start">
+        {showBack && (
+          <button type="button" className="btn secondary" onClick={onBack}>
+            Back
+          </button>
+        )}
+      </div>
+      <div className="step-footer-end">
+        {extraEnd}
+        {showSkip ? (
+          <button type="button" className="btn secondary" onClick={onNext}>
+            Skip for now
+          </button>
+        ) : (
+          <button type="button" className="btn primary" disabled={primaryDisabled} onClick={onNext}>
+            {nextLabel}
+          </button>
+        )}
+      </div>
+    </footer>
+  );
+}
 
 export default function OnboardingPage() {
   const navigate = useNavigate();
   const [step, setStep] = useState(0);
   const [status, setStatus] = useState<OnboardingStatus | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [health, setHealth] = useState(status?.lastHealthChecks ?? []);
+  const [error, setError] = useState<ApiError | null>(null);
+  const [health, setHealth] = useState<HealthCheck[]>([]);
+  const [healthBusy, setHealthBusy] = useState(false);
+  const [healthProgress, setHealthProgress] = useState<{ completed: number; total: number; current: string } | null>(
+    null
+  );
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (syncStep = false) => {
     const s = await onboardingApi.status();
     setStatus(s);
     if (s.lastHealthChecks) setHealth(s.lastHealthChecks);
-    if (!s.isComplete && s.currentStep > 0) setStep(Math.min(s.currentStep, STEPS.length - 1));
+    if (syncStep && !s.isComplete) {
+      setStep(resolveVisibleStepIndex(s, STEPS));
+    }
   }, []);
 
   useEffect(() => {
-    refresh().catch((e) => setError(e.message));
+    refresh(true).catch((e) => setError(toApiError(e)));
   }, [refresh]);
 
-  const mirrorEnabled = status?.mirror.enabled ?? false;
-
-  const visibleSteps = useMemo(
-    () =>
-      STEPS.filter((s) => {
-        if (s.id === "mirror-deploy" && !mirrorEnabled) return false;
-        if (s.id === "ha-mqtt" && !mirrorEnabled) return false;
-        return true;
-      }),
-    [mirrorEnabled]
-  );
+  const visibleSteps = useMemo(() => STEPS, []);
 
   const current = visibleSteps[Math.min(step, visibleSteps.length - 1)] ?? visibleSteps[0];
   const progress = ((step + 1) / visibleSteps.length) * 100;
@@ -56,14 +111,41 @@ export default function OnboardingPage() {
   const next = () => setStep((s) => Math.min(s + 1, visibleSteps.length - 1));
   const back = () => setStep((s) => Math.max(s - 1, 0));
 
+  const runHealth = async () => {
+    setHealthBusy(true);
+    setHealth([]);
+    setHealthProgress(null);
+    try {
+      const plan = await onboardingApi.healthPlan();
+      const results: HealthCheck[] = [];
+      for (let i = 0; i < plan.length; i++) {
+        const item = plan[i];
+        setHealthProgress({ completed: i, total: plan.length, current: item.name });
+        results.push(await onboardingApi.healthRun(item.id));
+        setHealth([...results]);
+        setHealthProgress({ completed: i + 1, total: plan.length, current: item.name });
+      }
+      setHealthProgress({ completed: plan.length, total: plan.length, current: "Complete" });
+      await onboardingApi.healthSave(results);
+      await refresh(false);
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setHealthBusy(false);
+      window.setTimeout(() => setHealthProgress(null), 600);
+    }
+  };
+
   if (error && !status) {
     return (
-      <div className="shell">
-        <div className="card error-card">
-          <h1>HA Staging Console</h1>
-          <p>{error}</p>
-        </div>
-      </div>
+      <LoadErrorPanel
+        title="Setup wizard"
+        error={error}
+        onRetry={() => {
+          setError(null);
+          refresh(true).catch((e) => setError(toApiError(e)));
+        }}
+      />
     );
   }
 
@@ -103,21 +185,26 @@ export default function OnboardingPage() {
             <>
               <h2>Welcome</h2>
               <p>
-                This wizard configures the <strong>staging sidecar</strong> (git apply, person sync,
-                storage sync) and optionally the <strong>MQTT mirror</strong> for live device states on staging.
+                This wizard configures the staging kit: a <strong>workbench</strong> HA instance that loads YAML from
+                your config git repo for testing. Production HA remains live truth for the running home until you
+                deploy approved git changes to prod separately.
+              </p>
+              <p>
+                The kit syncs config from git, keeps person/presence realistic from prod,
+                and optionally mirrors live MQTT device states from production.
               </p>
               <ul className="checklist">
-                <li>Docker and Docker Compose on this host</li>
-                <li>Git clone of your HA config repo (staging branch)</li>
-                <li>Prod and staging Home Assistant reachable on your LAN</li>
-                <li>Long-lived API tokens (prod read, staging write)</li>
+                <li>Docker and Docker Compose on the kit host</li>
+                <li>Git clone of your Home Assistant config repo (staging branch)</li>
+                <li>Production and staging Home Assistant reachable on your network</li>
+                <li>Long-lived API tokens (production read, staging write)</li>
+                <li>
+                  Person/presence sync — phones report to production only; the kit copies those states to staging{" "}
+                  <a href="https://github.com/Unthred/ha-staging-kit/blob/main/docs/person-presence-sync.md" target="_blank" rel="noreferrer">
+                    (learn more)
+                  </a>
+                </li>
               </ul>
-              <p className="muted">
-                Person/presence sync keeps staging location realistic — phones only report to prod.{" "}
-                <a href="https://github.com/Unthred/ha-staging-kit/blob/main/docs/person-presence-sync.md" target="_blank" rel="noreferrer">
-                  Learn more
-                </a>
-              </p>
               {status?.paths.haConfigRepo && status.prod.hasToken && status.staging.hasToken && (
                 <div className="bootstrap-banner">
                   <p>Existing configuration detected from <code>.env</code> and secrets.</p>
@@ -133,15 +220,34 @@ export default function OnboardingPage() {
                   </button>
                 </div>
               )}
+              <div className="step-actions-right">
+                <button type="button" className="btn primary" onClick={next}>
+                  Get started
+                </button>
+              </div>
             </>
           )}
 
           {current.id === "topology" && status && (
-            <TopologyStep status={status} onSaved={async (t) => { setStatus(await onboardingApi.topology(t)); next(); }} />
+            <TopologyStep
+              status={status}
+              showBack={step > 0}
+              onBack={back}
+              onSaved={async (t) => {
+                setStatus(await onboardingApi.topology(t));
+                next();
+              }}
+            />
           )}
 
           {current.id === "paths" && status && (
-            <PathsStep status={status} onSaved={async (p) => { setStatus(await onboardingApi.paths(p)); next(); }} />
+            <PathsStep
+              status={status}
+              onSaved={async (p) => {
+                setStatus(await onboardingApi.paths(p));
+                next();
+              }}
+            />
           )}
 
           {current.id === "prod" && status && (
@@ -158,132 +264,134 @@ export default function OnboardingPage() {
             />
           )}
 
+          {current.id === "storage" && status && (
+            <StorageStep status={status} onDone={() => refresh(false)} onNext={next} showBack={step > 0} onBack={back} />
+          )}
+
           {current.id === "mirror" && status && (
             <MirrorStep
               status={status}
-              onSaved={async (m) => { setStatus(await onboardingApi.mirror(m)); next(); }}
+              showBack={step > 0}
+              onBack={back}
+              onRefresh={() => refresh(false)}
+              onContinue={async (enabled, haConfirmed) => {
+                setStatus(await onboardingApi.mirror({ ...status.mirror, enabled }));
+                if (enabled && haConfirmed) setStatus(await onboardingApi.confirmHaMqtt());
+                next();
+              }}
             />
-          )}
-
-          {current.id === "deploy" && (
-            <>
-              <h2>Deploy sidecar</h2>
-              <p>Build and start the sidecar container using your <code>.env</code> and secrets.</p>
-              <ActionButton
-                label="Deploy sidecar"
-                onRun={onboardingApi.deploy}
-                onDone={() => { refresh(); next(); }}
-              />
-            </>
-          )}
-
-          {current.id === "storage" && (
-            <>
-              <h2>Storage sync</h2>
-              <p>
-                Copies a subset of prod <code>.storage</code> (registry, MQTT creds for mirror) and person images to staging via SSH.
-              </p>
-              <ActionButton
-                label="Run storage sync"
-                onRun={onboardingApi.storageSync}
-                onDone={() => { refresh(); next(); }}
-              />
-            </>
-          )}
-
-          {current.id === "mirror-deploy" && (
-            <>
-              <h2>Deploy MQTT mirror</h2>
-              <p>Starts the one-way Mosquitto bridge (read-only by default).</p>
-              <ActionButton
-                label="Deploy mirror"
-                onRun={onboardingApi.deployMirror}
-                onDone={() => { refresh(); next(); }}
-              />
-            </>
-          )}
-
-          {current.id === "ha-mqtt" && (
-            <>
-              <h2>Point staging HA at the mirror</h2>
-              <p>
-                In staging Home Assistant, set the MQTT integration broker to this host on port{" "}
-                <code>1883</code> (or your <code>MIRROR_PORT</code>).
-              </p>
-              <pre className="snippet">
-{`# Docker staging — broker URL example
-mqtt://<this-host-ip>:1883`}
-              </pre>
-              <label className="checkbox">
-                <input
-                  type="checkbox"
-                  checked={status?.haMqttConfirmed ?? false}
-                  onChange={async (e) => {
-                    if (e.target.checked) {
-                      setStatus(await onboardingApi.confirmHaMqtt());
-                      next();
-                    }
-                  }}
-                />
-                I&apos;ve pointed staging HA at the mirror broker
-              </label>
-            </>
           )}
 
           {current.id === "health" && (
             <>
               <h2>Health checks</h2>
-              <p>Verify sidecar, API tokens, and person sync.</p>
-              <button
-                type="button"
-                className="btn primary"
-                onClick={async () => {
-                  setHealth(await onboardingApi.health());
-                  await refresh();
+              <p>Verify config sync, API tokens, and person sync. Results stay on this step until you continue.</p>
+              {healthProgress && (
+                <div className="health-progress">
+                  <div className="progress-bar">
+                    <div
+                      className={`progress-fill ${healthBusy ? "progress-fill-active" : ""}`}
+                      style={{
+                        width: `${Math.max(
+                          4,
+                          (healthProgress.completed / Math.max(healthProgress.total, 1)) * 100
+                        )}%`,
+                      }}
+                    />
+                  </div>
+                  <span className="progress-label">
+                    {healthBusy
+                      ? healthProgress.completed < healthProgress.total
+                        ? `Checking ${healthProgress.current} (${healthProgress.completed + 1} of ${healthProgress.total})`
+                        : "Finishing…"
+                      : `${healthProgress.completed} of ${healthProgress.total} checks complete`}
+                  </span>
+                </div>
+              )}
+              {health.length > 0 && (
+                <ul className="health-list">
+                  {health.map((h) => (
+                    <li key={h.name}>
+                      <strong>{h.name}</strong> <Chip status={h.status} />
+                      <span className="muted">{h.detail}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <StepFooter
+                showBack={step > 0}
+                onBack={back}
+                onNext={async () => {
+                  setStatus(await onboardingApi.healthContinue());
+                  next();
                 }}
-              >
-                Run checks
-              </button>
-              <ul className="health-list">
-                {health.map((h) => (
-                  <li key={h.name}>
-                    <strong>{h.name}</strong> <Chip status={h.status} />
-                    <span className="muted">{h.detail}</span>
-                  </li>
-                ))}
-              </ul>
+                showSkip={false}
+                nextLabel="Continue"
+                extraEnd={
+                  <button type="button" className="btn secondary" disabled={healthBusy} onClick={runHealth}>
+                    {healthBusy ? "Running checks…" : health.length ? "Run checks again" : "Run checks"}
+                  </button>
+                }
+              />
             </>
           )}
 
           {current.id === "done" && (
             <>
               <h2>All set</h2>
-              <p>Staging sidecar is configured. Open the dashboard for day-two operations.</p>
-              <button
-                type="button"
-                className="btn primary"
-                onClick={async () => {
-                  await onboardingApi.complete();
-                  navigate("/");
-                }}
-              >
-                Go to dashboard
-              </button>
+              <p>Staging kit is configured. Open the dashboard for day-two operations.</p>
+              {(health.length > 0 || (status?.lastHealthChecks?.length ?? 0) > 0) && (
+                <>
+                  <h3>Last health checks</h3>
+                  <ul className="health-list">
+                    {(health.length ? health : status?.lastHealthChecks ?? []).map((h) => (
+                      <li key={h.name}>
+                        <strong>{h.name}</strong> <Chip status={h.status} />
+                        <span className="muted">{h.detail}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              <footer className="step-footer">
+                <div className="step-footer-start">
+                  {step > 0 && (
+                    <button
+                      type="button"
+                      className="btn secondary"
+                      onClick={() => setStep(visibleSteps.findIndex((s) => s.id === "health"))}
+                    >
+                      Back to health checks
+                    </button>
+                  )}
+                </div>
+                <div className="step-footer-end">
+                  <button
+                    type="button"
+                    className="btn primary"
+                    onClick={async () => {
+                      await onboardingApi.complete();
+                      navigate("/");
+                    }}
+                  >
+                    Go to dashboard
+                  </button>
+                </div>
+              </footer>
             </>
           )}
 
-          <footer className="footer">
-            {step > 0 && (
-              <button type="button" className="btn secondary" onClick={back}>
-                Back
-              </button>
+          {current.id !== "done" &&
+            current.id !== "topology" &&
+            current.id !== "paths" &&
+            current.id !== "prod" &&
+            current.id !== "staging" &&
+            current.id !== "mirror" &&
+            current.id !== "storage" &&
+            current.id !== "health" &&
+            current.id !== "welcome" && (
+              <StepFooter showBack={step > 0} onBack={back} onNext={next} />
             )}
-            {current.id !== "done" && current.id !== "deploy" && current.id !== "storage" && current.id !== "mirror-deploy" && (
-              <button type="button" className="btn ghost" onClick={next}>
-                Skip for now
-              </button>
-            )}
-          </footer>
         </main>
       </div>
     </div>
@@ -292,16 +400,46 @@ mqtt://<this-host-ip>:1883`}
 
 function TopologyStep({
   status,
+  showBack,
+  onBack,
   onSaved,
 }: {
   status: OnboardingStatus;
+  showBack: boolean;
+  onBack: () => void;
   onSaved: (t: OnboardingStatus["topology"]) => Promise<void>;
 }) {
   const [form, setForm] = useState(status.topology);
+  const [saveError, setSaveError] = useState<ApiError | null>(null);
+  const [saving, setSaving] = useState(false);
+  const showRemoteWarning = !form.sameHostAsKit;
+
+  useEffect(() => {
+    setForm(status.topology);
+  }, [status.topology]);
+
+  const save = async () => {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await onSaved(form);
+    } catch (e) {
+      setSaveError(toApiError(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <>
       <h2>Topology</h2>
       <p>Where do prod and staging Home Assistant run?</p>
+      {showRemoteWarning && (
+        <p className="muted warn">
+          Staging config directory must be reachable on <strong>this kit host</strong> (local disk, NFS, bind mount, etc.).
+          REST API access alone is not enough for git apply and storage sync.
+        </p>
+      )}
       <label>
         Prod HA
         <select value={form.prodHaType} onChange={(e) => setForm({ ...form, prodHaType: e.target.value })}>
@@ -326,9 +464,23 @@ function TopologyStep({
         />
         Kit runs on the same host as staging HA
       </label>
-      <button type="button" className="btn primary" onClick={() => onSaved(form)}>
-        Save & continue
-      </button>
+      {saveError && (
+        <div className="save-error">
+          <p className="msg err">{saveError.title}</p>
+          <p>{saveError.detail}</p>
+          {saveError.hint && <p className="muted">{saveError.hint}</p>}
+        </div>
+      )}
+      <StepFooter
+        showBack={showBack}
+        onBack={onBack}
+        onNext={() => {
+          void save();
+        }}
+        showSkip={false}
+        nextLabel={saving ? "Saving…" : "Save & continue"}
+        primaryDisabled={saving}
+      />
     </>
   );
 }
@@ -341,32 +493,54 @@ function PathsStep({
   onSaved: (p: OnboardingStatus["paths"]) => Promise<void>;
 }) {
   const [form, setForm] = useState(status.paths);
+  const [saveError, setSaveError] = useState<ApiError | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setForm(status.paths);
+  }, [status.paths]);
+
+  const save = async () => {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await onSaved(form);
+    } catch (e) {
+      setSaveError(toApiError(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <>
-      <h2>Paths & git</h2>
-      <label>
-        HA config repo path (host)
-        <input value={form.haConfigRepo} onChange={(e) => setForm({ ...form, haConfigRepo: e.target.value })} placeholder="/path/to/HomeAssistant" />
-      </label>
-      <label>
-        Git branch
-        <input value={form.haBranch} onChange={(e) => setForm({ ...form, haBranch: e.target.value })} />
-      </label>
-      <label>
-        Staging HA config directory (host)
-        <input value={form.haStagingConfig} onChange={(e) => setForm({ ...form, haStagingConfig: e.target.value })} />
-      </label>
-      <label>
-        Sidecar data directory
-        <input value={form.sidecarData} onChange={(e) => setForm({ ...form, sidecarData: e.target.value })} />
-      </label>
-      <label>
-        Mirror data directory
-        <input value={form.mirrorData} onChange={(e) => setForm({ ...form, mirrorData: e.target.value })} />
-      </label>
-      <button type="button" className="btn primary" onClick={() => onSaved(form)}>
-        Save & continue
-      </button>
+      <h2>Paths &amp; git</h2>
+      <PathsHelpPanel />
+      {form.haConfigRepo && form.haStagingConfig && (
+        <p className="muted paths-prefill-note">
+          Paths are loaded from your kit <code>.env</code>. Change them only if you moved folders; use Browse if you
+          need to pick a new location.
+        </p>
+      )}
+      <PathsFormFields
+        form={form}
+        onChange={setForm}
+        showTests
+        onTestGitRepo={() => onboardingApi.testGitRepo({ haConfigRepo: form.haConfigRepo })}
+        onTestStagingPath={() => onboardingApi.testStagingPath({ haStagingConfig: form.haStagingConfig })}
+      />
+      {saveError && (
+        <div className="save-error">
+          <p className="msg err">{saveError.title}</p>
+          <p>{saveError.detail}</p>
+          {saveError.hint && <p className="muted">{saveError.hint}</p>}
+        </div>
+      )}
+      <div className="step-actions-right">
+        <button type="button" className="btn primary" disabled={saving} onClick={save}>
+          {saving ? "Saving…" : "Save & continue"}
+        </button>
+      </div>
     </>
   );
 }
@@ -383,37 +557,45 @@ function ProdStep({
   const [sshTarget, setSshTarget] = useState(status.prod.sshTarget);
   const [sshKey, setSshKey] = useState("");
 
+  useEffect(() => {
+    setUrl(status.prod.url);
+    setSshTarget(status.prod.sshTarget);
+  }, [status.prod.url, status.prod.sshTarget]);
+
   return (
     <>
-      <h2>Prod connection</h2>
+      <h2>Production connection</h2>
       <p className="muted">
-        Prod <strong>read</strong> token powers person/presence sync. SSH target is used for secrets and storage sync.
+        How the kit reaches your <strong>production</strong> Home Assistant and host. Used for person/presence sync (REST),
+        pulling <code>secrets.yaml</code> and <code>.storage</code> over SSH, and as the source for MQTT mirroring.
       </p>
       <label>
-        Prod HA URL
+        Production HA URL
         <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://192.168.1.10:8123" />
       </label>
       <label>
-        Prod read token {status.prod.hasToken && <span className="configured">configured ✓</span>}
+        Production read token {status.prod.hasToken && <span className="configured">configured ✓</span>}
         <input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder={status.prod.hasToken ? "Leave blank to keep existing" : "Paste token"} />
       </label>
       <label>
-        SSH target (user@host:/homeassistant)
+        SSH target (production config on disk — <code>user@host:/path/to/config</code>)
         <input value={sshTarget} onChange={(e) => setSshTarget(e.target.value)} placeholder="user@prod:/homeassistant" />
       </label>
       <label>
         SSH private key {status.prod.hasSshKey && <span className="configured">configured ✓</span>}
         <textarea value={sshKey} onChange={(e) => setSshKey(e.target.value)} rows={4} placeholder="Paste key or leave blank to keep existing" />
       </label>
-      <TestButton label="Test prod API" onTest={onboardingApi.testProd} />
-      <TestButton label="Test SSH" onTest={onboardingApi.testSsh} />
-      <button
-        type="button"
-        className="btn primary"
-        onClick={() => onSaved({ url, token: token || undefined, sshTarget, sshPrivateKey: sshKey || undefined })}
-      >
-        Save & continue
-      </button>
+      <TestButton label="Test production API" onTest={() => onboardingApi.testProd({ url, token: token || undefined })} />
+      <TestButton label="Test SSH" onTest={() => onboardingApi.testSsh({ sshTarget, sshPrivateKey: sshKey || undefined })} />
+      <div className="step-actions-right">
+        <button
+          type="button"
+          className="btn primary"
+          onClick={() => onSaved({ url, token: token || undefined, sshTarget, sshPrivateKey: sshKey || undefined })}
+        >
+          Save & continue
+        </button>
+      </div>
     </>
   );
 }
@@ -428,67 +610,234 @@ function StagingStep({
   const [url, setUrl] = useState(status.staging.url);
   const [token, setToken] = useState("");
 
+  useEffect(() => {
+    setUrl(status.staging.url);
+  }, [status.staging.url]);
+
   return (
     <>
       <h2>Staging connection</h2>
-      <p className="muted">Staging <strong>write</strong> token lets the sidecar update person/tracker states.</p>
+      <p className="muted">
+        How the kit talks to <strong>staging</strong> Home Assistant over the network. The write token lets the kit push
+        person/tracker state updates via REST. Config files themselves are written directly to the staging config directory
+        on disk — no SSH to staging is required.
+      </p>
       <label>
         Staging HA URL
-        <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://127.0.0.1:8123" />
+        <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://192.168.1.11:8123" />
       </label>
       <label>
         Staging write token {status.staging.hasToken && <span className="configured">configured ✓</span>}
         <input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder={status.staging.hasToken ? "Leave blank to keep existing" : "Paste token"} />
       </label>
-      <TestButton label="Test staging API" onTest={onboardingApi.testStaging} />
-      <button type="button" className="btn primary" onClick={() => onSaved({ url, token: token || undefined })}>
-        Save & continue
-      </button>
+      <TestButton label="Test staging API" onTest={() => onboardingApi.testStaging({ url, token: token || undefined })} />
+      <div className="step-actions-right">
+        <button type="button" className="btn primary" onClick={() => onSaved({ url, token: token || undefined })}>
+          Save & continue
+        </button>
+      </div>
     </>
   );
 }
 
 function MirrorStep({
   status,
-  onSaved,
+  showBack,
+  onBack,
+  onRefresh,
+  onContinue,
 }: {
   status: OnboardingStatus;
-  onSaved: (m: OnboardingStatus["mirror"]) => Promise<void>;
+  showBack: boolean;
+  onBack: () => void;
+  onRefresh: () => void;
+  onContinue: (enabled: boolean, haConfirmed: boolean) => Promise<void>;
 }) {
-  const [form, setForm] = useState(status.mirror);
+  const [enabled, setEnabled] = useState(status.mirror.enabled);
+  const [haConfirmed, setHaConfirmed] = useState(status.haMqttConfirmed);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setEnabled(status.mirror.enabled);
+    setHaConfirmed(status.haMqttConfirmed);
+  }, [status.mirror.enabled, status.haMqttConfirmed]);
+
+  useEffect(() => {
+    void onRefresh();
+  }, [onRefresh]);
+
+  const storageDone = status.completedSteps.includes("storage");
+  const brokerUp = status.mirrorRunning;
+  const alreadyUp = status.mirrorConfigured && brokerUp;
+  const canContinue = !enabled || haConfirmed;
 
   return (
     <>
       <h2>MQTT mirror (optional)</h2>
       <p>
-        Do you want <strong>live device states</strong> from prod on staging (Zigbee2MQTT, etc.)?
-        If not, staging uses its own MQTT or none.
+        Live Zigbee/MQTT device states from prod on staging. Two parts: the <strong>kit</strong> runs Mosquitto
+        (automatic), then you point <strong>staging Home Assistant</strong> at it once in its UI.
       </p>
       <label className="checkbox">
-        <input
-          type="checkbox"
-          checked={form.enabled}
-          onChange={(e) => setForm({ ...form, enabled: e.target.checked })}
-        />
+        <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
         Yes, enable MQTT mirror
       </label>
-      {form.enabled && (
+
+      {enabled && (
         <>
-          <label>
-            Prod Mosquitto host
-            <input value={form.prodMqttHost} onChange={(e) => setForm({ ...form, prodMqttHost: e.target.value })} />
+          <h3>In this kit (automatic)</h3>
+          <p className="muted">
+            Mosquitto runs inside this container on port <code>{status.mirror.stagingMqttPort ?? 1883}</code>. Bridge
+            targets are derived from your prod and staging HA URLs.
+          </p>
+          {(status.mirror.prodMqttHost || status.mirror.stagingMqttBrokerHost) && (
+            <ul className="checklist">
+              {status.mirror.prodMqttHost && (
+                <li>
+                  Bridge to prod: <code>{status.mirror.prodMqttHost}:{status.mirror.prodMqttPort}</code>
+                </li>
+              )}
+              {status.mirror.stagingMqttBrokerHost && (
+                <li>
+                  Staging HA should use:{" "}
+                  <code>
+                    {status.mirror.stagingMqttBrokerHost}:{status.mirror.stagingMqttPort ?? 1883}
+                  </code>
+                </li>
+              )}
+            </ul>
+          )}
+          {!storageDone && (
+            <p className="muted warn">
+              Complete <strong>Storage sync</strong> on the previous step first — the mirror needs MQTT credentials
+              from staging <code>.storage</code>.
+            </p>
+          )}
+          {enabled && alreadyUp ? (
+            <p className="msg ok">Mirror broker is running in this kit.</p>
+          ) : enabled && status.mirrorConfigured && !brokerUp ? (
+            <p className="muted warn">Mirror config exists but Mosquitto is not running — deploy to start it.</p>
+          ) : null}
+          <div className="step-actions-right ops-actions">
+            <ActionButton
+              label={alreadyUp ? "Refresh mirror" : "Deploy mirror"}
+              toastPreset={alreadyUp ? "refresh-mirror" : "deploy-mirror"}
+              onRun={onboardingApi.deployMirror}
+              onDone={onRefresh}
+              variant={alreadyUp ? "secondary" : "primary"}
+              disabled={!storageDone || !enabled}
+            />
+            <TestButton
+              label="Test mirror broker"
+              onTest={() =>
+                onboardingApi.testMqtt({
+                  prodMqttHost: "127.0.0.1",
+                  prodMqttPort: status.mirror.stagingMqttPort ?? 1883,
+                })
+              }
+            />
+            {status.mirror.prodMqttHost && (
+              <TestButton
+                label="Test prod bridge"
+                onTest={() =>
+                  onboardingApi.testMqtt({
+                    prodMqttHost: status.mirror.prodMqttHost,
+                    prodMqttPort: status.mirror.prodMqttPort,
+                  })
+                }
+              />
+            )}
+          </div>
+
+          <h3>In staging Home Assistant (you, once)</h3>
+          <p className="muted">
+            The kit cannot change staging HA&apos;s MQTT integration for you. Follow these steps, then tick the box
+            below.
+          </p>
+          <MqttMirrorInstructions
+            stagingHaType={status.topology.stagingHaType}
+            brokerHost={status.mirror.stagingMqttBrokerHost ?? undefined}
+            brokerPort={status.mirror.stagingMqttPort ?? 1883}
+          />
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={haConfirmed}
+              onChange={(e) => setHaConfirmed(e.target.checked)}
+            />
+            I&apos;ve pointed staging HA at the mirror broker
           </label>
-          <label>
-            Port
-            <input type="number" value={form.prodMqttPort} onChange={(e) => setForm({ ...form, prodMqttPort: Number(e.target.value) })} />
-          </label>
-          <TestButton label="Test MQTT TCP" onTest={onboardingApi.testMqtt} />
-          <p className="muted warn">Mirror defaults to read-only. Control mode is not offered during onboarding.</p>
+          <p className="muted warn">Mirror defaults to read-only during onboarding.</p>
         </>
       )}
-      <button type="button" className="btn primary" onClick={() => onSaved(form)}>
-        Save & continue
-      </button>
+
+      <StepFooter
+        showBack={showBack}
+        onBack={onBack}
+        onNext={() => {
+          setSaving(true);
+          void onContinue(enabled, haConfirmed).finally(() => setSaving(false));
+        }}
+        showSkip={!enabled}
+        nextLabel={saving ? "Saving…" : "Save & continue"}
+        primaryDisabled={saving || !canContinue}
+      />
+    </>
+  );
+}
+
+function StorageStep({
+  status,
+  onDone,
+  onNext,
+  showBack,
+  onBack,
+}: {
+  status: OnboardingStatus;
+  onDone: () => void;
+  onNext: () => void;
+  showBack: boolean;
+  onBack: () => void;
+}) {
+  const completed = status.completedSteps.includes("storage");
+
+  return (
+    <>
+      <h2>Storage sync</h2>
+      <p>
+        One-time (or occasional) copy of selected production <code>.storage</code> files into staging over SSH — entity/device
+        registry, MQTT integration credentials, person records, and related images.
+      </p>
+      <p className="muted">
+        <strong>Sidebar turns green</strong> after storage sync completes successfully. You can skip this step if staging
+        already has the entities you need, but MQTT mirror setup usually requires it first.
+      </p>
+      <ul className="checklist">
+        <li>Required before first MQTT mirror deploy (mirror reads MQTT creds from staging <code>.storage</code>)</li>
+        <li>Run again after adding devices or integrations on production</li>
+        <li>Does not modify production — read-only from production&apos;s perspective</li>
+        {status.topology.stagingHaType === "docker" && (
+          <li>
+            Docker staging has no Apps page — MQTT lives under Devices &amp; services, not the Add-on store
+          </li>
+        )}
+        {status.mirror.enabled && status.mirror.stagingMqttBrokerHost && (
+          <li>
+            After sync, the kit re-applies the mirror broker ({status.mirror.stagingMqttBrokerHost}) so MQTT does not
+            stay pointed at prod <code>core-mosquitto</code>
+          </li>
+        )}
+      </ul>
+      {completed && <p className="msg ok">Storage sync completed in this setup session.</p>}
+      <div className="step-actions-right ops-actions">
+        <ActionButton
+          label="Run storage sync"
+          toastPreset="storage-sync"
+          onRun={onboardingApi.storageSync}
+          onDone={onDone}
+        />
+      </div>
+      <StepFooter showBack={showBack} onBack={onBack} onNext={onNext} showSkip={false} nextLabel="Next" />
     </>
   );
 }

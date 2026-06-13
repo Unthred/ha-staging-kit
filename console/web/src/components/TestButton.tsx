@@ -1,30 +1,37 @@
 import { useState } from "react";
 import type { TestResult } from "../api";
+import { toApiError } from "../api";
+import { testToast } from "../lib/toastMessages";
+import { useToast } from "./Toast";
 
 export function TestButton({ label, onTest }: { label: string; onTest: () => Promise<TestResult> }) {
-  const [result, setResult] = useState<TestResult | null>(null);
+  const { push } = useToast();
   const [busy, setBusy] = useState(false);
 
   return (
-    <div className="test-row">
-      <button
-        type="button"
-        className="btn secondary"
-        disabled={busy}
-        onClick={async () => {
-          setBusy(true);
-          try {
-            setResult(await onTest());
-          } catch (e) {
-            setResult({ ok: false, message: e instanceof Error ? e.message : "Test failed" });
-          } finally {
-            setBusy(false);
-          }
-        }}
-      >
-        {busy ? "Testing…" : label}
-      </button>
-      {result && <p className={result.ok ? "msg ok" : "msg err"}>{result.message}</p>}
-    </div>
+    <button
+      type="button"
+      className="btn secondary"
+      disabled={busy}
+      onClick={async () => {
+        setBusy(true);
+        try {
+          const result = await onTest();
+          const t = testToast(result.ok, result.message);
+          push({ message: t.message, tone: t.tone, icon: t.icon });
+        } catch (e) {
+          const err = toApiError(e);
+          push({
+            message: err.hint ? `${err.detail} ${err.hint}` : err.detail,
+            tone: "err",
+            icon: "🔌🍌",
+          });
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      {busy ? "Testing…" : label}
+    </button>
   );
 }

@@ -1,36 +1,62 @@
 import { useEffect, useState } from "react";
-import { onboardingApi, settingsApi, type SettingsView } from "../api";
+import { onboardingApi, settingsApi, toApiError, type ApiError, type SettingsView } from "../api";
+import { LoadErrorPanel } from "../components/LoadErrorPanel";
+import { MqttMirrorInstructions } from "../components/MqttMirrorInstructions";
+import { PathsFormFields } from "../components/PathsFormFields";
+import { PathsHelpPanel } from "../components/PathsHelpPanel";
+import { StagingTargetSummary } from "../components/StagingTargetSummary";
 import { TestButton } from "../components/TestButton";
 
+const SECTIONS = [
+  { id: "paths", title: "Paths & git", summary: "Host folders bind-mounted into the kit container." },
+  { id: "production", title: "Production connection", summary: "Production HA API and SSH for secrets/storage." },
+  { id: "staging", title: "Staging connection", summary: "Staging HA API for REST updates." },
+  { id: "mirror", title: "MQTT mirror", summary: "Optional live MQTT bridge from production." },
+  { id: "intervals", title: "Sync intervals", summary: "Background poll and storage sync timing." },
+  { id: "advanced", title: "Advanced", summary: "Container name and other options." },
+] as const;
+
+type SectionId = (typeof SECTIONS)[number]["id"];
+
 export default function SettingsPage() {
+  const [sectionId, setSectionId] = useState<SectionId>("paths");
   const [form, setForm] = useState<SettingsView | null>(null);
   const [prodToken, setProdToken] = useState("");
   const [stagingToken, setStagingToken] = useState("");
   const [sshKey, setSshKey] = useState("");
   const [message, setMessage] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ApiError | null>(null);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    settingsApi.get().then(setForm).catch((e) => setError(e.message));
+    settingsApi.get().then(setForm).catch((e) => setError(toApiError(e)));
   }, []);
+
+  const current = SECTIONS.find((s) => s.id === sectionId) ?? SECTIONS[0];
 
   if (error && !form) {
     return (
-      <div className="card error-card">
-        <h2>Settings</h2>
-        <p className="msg err">{error}</p>
-      </div>
+      <LoadErrorPanel
+        title="Settings"
+        error={error}
+        onRetry={() => {
+          setError(null);
+          settingsApi.get().then(setForm).catch((e) => setError(toApiError(e)));
+        }}
+      />
     );
   }
 
   if (!form) return <div className="card">Loading settings…</div>;
 
   const save = async () => {
+    setSaving(true);
     setMessage(null);
     setError(null);
     try {
       const updated = await settingsApi.save({
         ...form,
+        topology: form.topology,
         prodUrl: form.prod.url,
         prodToken: prodToken || undefined,
         sshTarget: form.prod.sshTarget,
@@ -44,188 +70,270 @@ export default function SettingsPage() {
       setSshKey("");
       setMessage("Settings saved");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Save failed");
+      setError(toApiError(e));
+    } finally {
+      setSaving(false);
     }
   };
 
   return (
-    <div className="page">
+    <div className="page ops-page">
       <div className="page-header">
         <div>
           <h2>Settings</h2>
-          <p className="muted">Paths, tokens, and sidecar intervals. Secrets are write-only.</p>
+          <p className="muted">{current.summary}</p>
         </div>
       </div>
 
-      <div className="card main-card settings-form">
-        <h3>Paths & git</h3>
-        <label>
-          HA config repo
-          <input
-            value={form.paths.haConfigRepo}
-            onChange={(e) => setForm({ ...form, paths: { ...form.paths, haConfigRepo: e.target.value } })}
-          />
-        </label>
-        <label>
-          Git branch
-          <input
-            value={form.paths.haBranch}
-            onChange={(e) => setForm({ ...form, paths: { ...form.paths, haBranch: e.target.value } })}
-          />
-        </label>
-        <label>
-          Staging HA config directory
-          <input
-            value={form.paths.haStagingConfig}
-            onChange={(e) => setForm({ ...form, paths: { ...form.paths, haStagingConfig: e.target.value } })}
-          />
-        </label>
-        <label>
-          Sidecar data directory
-          <input
-            value={form.paths.sidecarData}
-            onChange={(e) => setForm({ ...form, paths: { ...form.paths, sidecarData: e.target.value } })}
-          />
-        </label>
-        <label>
-          Mirror data directory
-          <input
-            value={form.paths.mirrorData}
-            onChange={(e) => setForm({ ...form, paths: { ...form.paths, mirrorData: e.target.value } })}
-          />
-        </label>
+      <div className="layout">
+        <nav className="sidebar" aria-label="Settings sections">
+          {SECTIONS.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              className={`nav-item ${s.id === sectionId ? "active" : ""}`}
+              onClick={() => setSectionId(s.id)}
+            >
+              {s.title}
+            </button>
+          ))}
+        </nav>
 
-        <h3>Prod connection</h3>
-        <label>
-          Prod HA URL
-          <input
-            value={form.prod.url}
-            onChange={(e) => setForm({ ...form, prod: { ...form.prod, url: e.target.value } })}
-          />
-        </label>
-        <label>
-          Prod read token {form.prod.hasToken && <span className="configured">configured ✓</span>}
-          <input type="password" value={prodToken} onChange={(e) => setProdToken(e.target.value)} placeholder="Leave blank to keep existing" />
-        </label>
-        <label>
-          SSH target
-          <input
-            value={form.prod.sshTarget}
-            onChange={(e) => setForm({ ...form, prod: { ...form.prod, sshTarget: e.target.value } })}
-          />
-        </label>
-        <label>
-          SSH private key {form.prod.hasSshKey && <span className="configured">configured ✓</span>}
-          <textarea value={sshKey} onChange={(e) => setSshKey(e.target.value)} rows={4} placeholder="Leave blank to keep existing" />
-        </label>
-        <TestButton label="Test prod API" onTest={onboardingApi.testProd} />
-        <TestButton label="Test SSH" onTest={onboardingApi.testSsh} />
+        <main className="card main-card settings-form">
+          <h2>{current.title}</h2>
 
-        <h3>Staging connection</h3>
-        <label>
-          Staging HA URL
-          <input
-            value={form.staging.url}
-            onChange={(e) => setForm({ ...form, staging: { ...form.staging, url: e.target.value } })}
-          />
-        </label>
-        <label>
-          Staging write token {form.staging.hasToken && <span className="configured">configured ✓</span>}
-          <input type="password" value={stagingToken} onChange={(e) => setStagingToken(e.target.value)} placeholder="Leave blank to keep existing" />
-        </label>
-        <TestButton label="Test staging API" onTest={onboardingApi.testStaging} />
-
-        <h3>MQTT mirror</h3>
-        <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={form.mirror.enabled}
-            onChange={(e) => setForm({ ...form, mirror: { ...form.mirror, enabled: e.target.checked } })}
-          />
-          Mirror enabled
-        </label>
-        {form.mirror.enabled && (
-          <>
-            <label>
-              Prod Mosquitto host
-              <input
-                value={form.mirror.prodMqttHost}
-                onChange={(e) => setForm({ ...form, mirror: { ...form.mirror, prodMqttHost: e.target.value } })}
+          {sectionId === "paths" && (
+            <>
+              <PathsHelpPanel />
+              <PathsFormFields
+                form={form.paths}
+                onChange={(paths) => setForm({ ...form, paths })}
               />
-            </label>
-            <label>
-              Port
-              <input
-                type="number"
-                value={form.mirror.prodMqttPort}
-                onChange={(e) => setForm({ ...form, mirror: { ...form.mirror, prodMqttPort: Number(e.target.value) } })}
+            </>
+          )}
+
+          {sectionId === "production" && (
+            <>
+              <p className="muted">
+                Production read token and SSH access. Used for person sync, secrets, and storage sync — not just presence.
+              </p>
+              <label>
+                Production HA URL
+                <input
+                  value={form.prod.url}
+                  onChange={(e) => setForm({ ...form, prod: { ...form.prod, url: e.target.value } })}
+                />
+              </label>
+              <label>
+                Production read token {form.prod.hasToken && <span className="configured">configured ✓</span>}
+                <input
+                  type="password"
+                  value={prodToken}
+                  onChange={(e) => setProdToken(e.target.value)}
+                  placeholder="Leave blank to keep existing"
+                />
+              </label>
+              <label>
+                SSH target
+                <input
+                  value={form.prod.sshTarget}
+                  onChange={(e) => setForm({ ...form, prod: { ...form.prod, sshTarget: e.target.value } })}
+                  placeholder="user@host:/path/to/homeassistant"
+                />
+              </label>
+              <label>
+                SSH private key {form.prod.hasSshKey && <span className="configured">configured ✓</span>}
+                <textarea
+                  value={sshKey}
+                  onChange={(e) => setSshKey(e.target.value)}
+                  rows={4}
+                  placeholder="Leave blank to keep existing"
+                />
+              </label>
+              <TestButton
+                label="Test production API"
+                onTest={() => onboardingApi.testProd({ url: form.prod.url, token: prodToken || undefined })}
               />
-            </label>
-            <TestButton label="Test MQTT TCP" onTest={onboardingApi.testMqtt} />
-          </>
-        )}
+              <TestButton
+                label="Test SSH"
+                onTest={() =>
+                  onboardingApi.testSsh({ sshTarget: form.prod.sshTarget, sshPrivateKey: sshKey || undefined })
+                }
+              />
+            </>
+          )}
 
-        <h3>Sidecar intervals</h3>
-        <label>
-          Person poll interval (seconds)
-          <input
-            type="number"
-            value={form.intervals.personPollIntervalSeconds}
-            onChange={(e) =>
-              setForm({
-                ...form,
-                intervals: { ...form.intervals, personPollIntervalSeconds: Number(e.target.value) },
-              })
-            }
-          />
-        </label>
-        <label>
-          Storage sync interval (seconds)
-          <input
-            type="number"
-            value={form.intervals.storageSyncIntervalSeconds}
-            onChange={(e) =>
-              setForm({
-                ...form,
-                intervals: { ...form.intervals, storageSyncIntervalSeconds: Number(e.target.value) },
-              })
-            }
-          />
-        </label>
-        <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={form.intervals.applyOnStart}
-            onChange={(e) => setForm({ ...form, intervals: { ...form.intervals, applyOnStart: e.target.checked } })}
-          />
-          Apply config on sidecar start
-        </label>
-        <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={form.intervals.skipStorageSync}
-            onChange={(e) => setForm({ ...form, intervals: { ...form.intervals, skipStorageSync: e.target.checked } })}
-          />
-          Skip scheduled storage sync
-        </label>
+          {sectionId === "staging" && (
+            <>
+              {form.stagingTarget && (
+                <div className="staging-target-card card-inset">
+                  <h3 className="staging-target-card-title">Detected staging instance</h3>
+                  <StagingTargetSummary target={form.stagingTarget} />
+                </div>
+              )}
+              <p className="muted">
+                Staging write token for REST state updates. Must match the URL staging Home Assistant is reachable at from
+                this kit container.
+              </p>
+              <label>
+                Staging HA URL
+                <input
+                  value={form.staging.url}
+                  onChange={(e) => setForm({ ...form, staging: { ...form.staging, url: e.target.value } })}
+                />
+              </label>
+              <label>
+                Staging write token {form.staging.hasToken && <span className="configured">configured ✓</span>}
+                <input
+                  type="password"
+                  value={stagingToken}
+                  onChange={(e) => setStagingToken(e.target.value)}
+                  placeholder="Leave blank to keep existing"
+                />
+              </label>
+              <TestButton
+                label="Test staging API"
+                onTest={() => onboardingApi.testStaging({ url: form.staging.url, token: stagingToken || undefined })}
+              />
+            </>
+          )}
 
-        <h3>Advanced</h3>
-        <label>
-          Staging HA container name (optional, for restart)
-          <input
-            value={form.stagingHaContainer ?? ""}
-            onChange={(e) => setForm({ ...form, stagingHaContainer: e.target.value })}
-            placeholder="Home-Assistant-Container"
-          />
-        </label>
+          {sectionId === "mirror" && (
+            <>
+              <p className="muted">Enable if this kit should run the MQTT mirror broker.</p>
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={form.mirror.enabled}
+                  onChange={(e) => setForm({ ...form, mirror: { ...form.mirror, enabled: e.target.checked } })}
+                />
+                Mirror enabled
+              </label>
+              {form.mirror.enabled && (
+                <>
+                  <p className="muted">
+                    Mosquitto runs inside the kit container. Endpoints are derived from prod/staging HA URLs and written
+                    to <code>.env</code> / sidecar config automatically.
+                  </p>
+                  {(form.mirror.prodMqttHost || form.mirror.stagingMqttBrokerHost) && (
+                    <ul className="checklist">
+                      {form.mirror.prodMqttHost && (
+                        <li>
+                          Prod bridge: <code>{form.mirror.prodMqttHost}:{form.mirror.prodMqttPort}</code>
+                        </li>
+                      )}
+                      {form.mirror.stagingMqttBrokerHost && (
+                        <li>
+                          Staging HA → mirror:{" "}
+                          <code>
+                            {form.mirror.stagingMqttBrokerHost}:{form.mirror.stagingMqttPort ?? 1883}
+                          </code>
+                        </li>
+                      )}
+                    </ul>
+                  )}
+                  <div className="card-inset" style={{ marginTop: "1rem" }}>
+                    <h3 className="staging-target-card-title">In staging Home Assistant (you, once)</h3>
+                    <p className="muted">
+                      The kit cannot change staging HA&apos;s MQTT integration for you. Point it at the mirror broker
+                      below, then deploy the mirror from Operations.
+                    </p>
+                    <MqttMirrorInstructions
+                      stagingHaType={form.topology.stagingHaType}
+                      brokerHost={form.mirror.stagingMqttBrokerHost ?? undefined}
+                      brokerPort={form.mirror.stagingMqttPort ?? 1883}
+                    />
+                  </div>
+                  {form.mirror.prodMqttHost && (
+                    <TestButton
+                      label="Test prod MQTT TCP"
+                      onTest={() =>
+                        onboardingApi.testMqtt({
+                          prodMqttHost: form.mirror.prodMqttHost,
+                          prodMqttPort: form.mirror.prodMqttPort,
+                        })
+                      }
+                    />
+                  )}
+                </>
+              )}
+            </>
+          )}
 
-        <div className="footer">
-          <button type="button" className="btn primary" onClick={save}>
-            Save settings
-          </button>
-        </div>
-        {message && <p className="msg ok">{message}</p>}
-        {error && <p className="msg err">{error}</p>}
+          {sectionId === "intervals" && (
+            <>
+              <p className="muted">How often the background sync loop polls production and runs storage sync.</p>
+              <label>
+                Person poll interval (seconds)
+                <input
+                  type="number"
+                  value={form.intervals.personPollIntervalSeconds}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      intervals: { ...form.intervals, personPollIntervalSeconds: Number(e.target.value) },
+                    })
+                  }
+                />
+              </label>
+              <label>
+                Storage sync interval (seconds)
+                <input
+                  type="number"
+                  value={form.intervals.storageSyncIntervalSeconds}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      intervals: { ...form.intervals, storageSyncIntervalSeconds: Number(e.target.value) },
+                    })
+                  }
+                />
+              </label>
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={form.intervals.applyOnStart}
+                  onChange={(e) =>
+                    setForm({ ...form, intervals: { ...form.intervals, applyOnStart: e.target.checked } })
+                  }
+                />
+                Apply config when sync loop starts
+              </label>
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={form.intervals.skipStorageSync}
+                  onChange={(e) =>
+                    setForm({ ...form, intervals: { ...form.intervals, skipStorageSync: e.target.checked } })
+                  }
+                />
+                Skip scheduled storage sync
+              </label>
+            </>
+          )}
+
+          {sectionId === "advanced" && (
+            <>
+              <p className="muted">Optional Docker container name for restarting staging Home Assistant from Operations.</p>
+              <label>
+                Staging HA container name
+                <input
+                  value={form.stagingHaContainer ?? ""}
+                  onChange={(e) => setForm({ ...form, stagingHaContainer: e.target.value })}
+                  placeholder="e.g. Home-Assistant-Container"
+                />
+              </label>
+            </>
+          )}
+
+          <div className="step-actions-right">
+            <button type="button" className="btn primary" disabled={saving} onClick={save}>
+              {saving ? "Saving…" : "Save settings"}
+            </button>
+          </div>
+          {message && <p className="msg ok">{message}</p>}
+          {error && <p className="msg err">{error.detail}</p>}
+        </main>
       </div>
     </div>
   );

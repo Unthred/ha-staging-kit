@@ -1,5 +1,7 @@
 import { useState } from "react";
 import type { DeployResult, OperationResult } from "../api";
+import { actionToast } from "../lib/toastMessages";
+import { useToast } from "./Toast";
 
 type Result = DeployResult | OperationResult;
 
@@ -8,38 +10,52 @@ export function ActionButton({
   onRun,
   onDone,
   variant = "primary",
+  disabled = false,
+  toastPreset,
 }: {
   label: string;
   onRun: () => Promise<Result>;
   onDone?: () => void;
   variant?: "primary" | "danger" | "secondary";
+  disabled?: boolean;
+  /** Friendly toast copy — e.g. storage-sync, deploy-mirror, refresh-mirror */
+  toastPreset?: string;
 }) {
-  const [log, setLog] = useState<string | null>(null);
+  const { push } = useToast();
   const [busy, setBusy] = useState(false);
 
   return (
-    <div className="action-block">
-      <button
-        type="button"
-        className={`btn ${variant}`}
-        disabled={busy}
-        onClick={async () => {
-          setBusy(true);
-          setLog(null);
-          try {
-            const r = await onRun();
-            setLog(r.logTail ?? r.message);
-            if (r.ok) onDone?.();
-          } catch (e) {
-            setLog(e instanceof Error ? e.message : "Action failed");
-          } finally {
-            setBusy(false);
+    <button
+      type="button"
+      className={`btn ${variant}`}
+      disabled={busy || disabled}
+      title={disabled ? "Not available — check configuration in Settings" : undefined}
+      onClick={async () => {
+        setBusy(true);
+        try {
+          const r = await onRun();
+          const fallback = r.message || (r.ok ? "Done" : "Action failed");
+          if (toastPreset) {
+            const t = actionToast(toastPreset, r.ok, fallback);
+            push({ message: t.message, tone: t.tone, icon: t.icon });
+          } else {
+            push({ message: fallback, tone: r.ok ? "ok" : "err" });
           }
-        }}
-      >
-        {busy ? "Running…" : label}
-      </button>
-      {log && <pre className="log">{log}</pre>}
-    </div>
+          if (r.ok) onDone?.();
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : "Action failed";
+          if (toastPreset) {
+            const t = actionToast(toastPreset, false, msg);
+            push({ message: t.message, tone: "err", icon: t.icon });
+          } else {
+            push({ message: msg, tone: "err" });
+          }
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      {busy ? "Running…" : label}
+    </button>
   );
 }

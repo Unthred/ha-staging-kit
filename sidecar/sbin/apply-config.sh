@@ -78,5 +78,13 @@ else
   log "Skipping .storage sync (SKIP_STORAGE_SYNC=1)"
 fi
 
+if ! "$SCRIPT_DIR/disable-lan-integrations.sh"; then
+  log "WARN: disable-lan-integrations failed — YAML guards still apply"
+fi
+
 touch "$HA_CONFIG/.staging-initialized"
+if commit=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null); then
+  echo "$commit" > "${SIDECAR_DATA:-/sidecar-data}/last-applied-commit"
+  log "Recorded applied commit ${commit:0:7}"
+fi
 log "Apply complete — restart Home-Assistant-Container to load YAML changes"

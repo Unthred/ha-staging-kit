@@ -73,3 +73,7 @@ rsync -av \
   "$HA_CONFIG/image/"
 
 log "Storage sync complete"
+
+if ! "$SCRIPT_DIR/patch-staging-storage.sh"; then
+  log "WARN: staging storage patch failed — MQTT broker may still point at prod"
+fi

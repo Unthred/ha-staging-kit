@@ -9,7 +9,7 @@ APP_ROOT="${MIRROR_DATA:-$ROOT/data/mirror}"
 CONFIG_DIR="$APP_ROOT/config"
 STATE_FILE="$APP_ROOT/control-mode"
 STORAGE="${HA_STAGING_CONFIG:-}/.storage/core.config_entries"
-CONTAINER="${MIRROR_CONTAINER:-mosquitto-mirror}"
+CONTAINER="${MIRROR_CONTAINER:-ha-staging-kit}"
 
 log() { echo "[mirror-control-mode] $*"; }
 
@@ -57,7 +57,21 @@ apply_mode() {
       log "Control mode OFF — read-only (safe default)"
       ;;
   esac
-  docker restart "$CONTAINER" >/dev/null 2>&1 && log "Restarted $CONTAINER" || log "WARN: restart $CONTAINER manually"
+  restart_mosquitto() {
+    if [[ -f /.dockerenv ]]; then
+      pkill -x mosquitto 2>/dev/null || true
+      sleep 0.5
+      mosquitto -c "$CONFIG_DIR/mosquitto.conf" >> "$APP_ROOT/log/mosquitto.log" 2>&1 &
+      log "Restarted mosquitto (in kit container)"
+    elif docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$CONTAINER"; then
+      docker exec "$CONTAINER" bash -lc "pkill -x mosquitto 2>/dev/null || true; sleep 0.5; mosquitto -c '$CONFIG_DIR/mosquitto.conf' >> '$APP_ROOT/log/mosquitto.log' 2>&1 &" \
+        && log "Restarted mosquitto in $CONTAINER" \
+        || log "WARN: mosquitto restart failed"
+    else
+      log "WARN: kit container not running — restart ha-staging-kit after deploy"
+    fi
+  }
+  restart_mosquitto
 }
 
 [[ $# -eq 1 ]] || { usage; exit 1; }

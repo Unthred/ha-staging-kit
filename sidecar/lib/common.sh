@@ -2,7 +2,12 @@
 # Shared helpers for ha-staging-sidecar scripts.
 set -euo pipefail
 
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ha-staging-sidecar: $*"; }
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ha-staging-kit-sync: $*"; }
+
+strip_cr() {
+  local name="$1"
+  printf -v "$name" '%s' "${!name//$'\r'/}"
+}
 
 load_config() {
   CONFIG_FILE="${SIDECAR_CONFIG:-/sidecar-data/config.env}"
@@ -26,6 +31,18 @@ load_config() {
   HA_SSH="${HA_SSH:-ssh -i ${SSH_KEY_FILE} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes}"
   HA_SECRETS="${HA_SECRETS:-squiggley@192.168.13.2:/homeassistant/secrets.yaml}"
   HA_STORAGE="${HA_STORAGE:-squiggley@192.168.13.2:/homeassistant/.storage/}"
+  STAGING_MQTT_BROKER="${STAGING_MQTT_BROKER:-}"
+  STAGING_MQTT_PORT="${STAGING_MQTT_PORT:-1883}"
+  STAGING_HA_TYPE="${STAGING_HA_TYPE:-docker}"
+  PROD_HA_TYPE="${PROD_HA_TYPE:-ha_os}"
+  SKIP_MQTT_PATCH="${SKIP_MQTT_PATCH:-0}"
+
+  for v in REPO_DIR HA_CONFIG HA_BRANCH STAGING_HA_URL PERSON_POLL_INTERVAL STORAGE_SYNC_INTERVAL \
+    SECRETS_DIR PROD_API_TOKEN_FILE STAGING_API_TOKEN_FILE SSH_KEY_FILE SIDECAR_TEMPLATE \
+    HA_SSH HA_SECRETS HA_STORAGE APPLY_ON_START SKIP_STORAGE_SYNC \
+    STAGING_MQTT_BROKER STAGING_MQTT_PORT STAGING_HA_TYPE PROD_HA_TYPE SKIP_MQTT_PATCH; do
+    [[ -n "${!v+x}" ]] && strip_cr "$v"
+  done
 }
 
 read_token_file() {

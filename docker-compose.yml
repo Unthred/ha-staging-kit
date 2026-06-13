@@ -1,49 +1,31 @@
-# ha-staging-kit — sidecar + MQTT mirror
-# Copy config.example.env → .env and set paths before: docker compose up -d --build
+# ha-staging-kit — single container (web UI + config sync + optional MQTT mirror)
+# Copy config.example.env → .env before: docker compose up -d --build
 
 services:
-  ha-staging-sidecar:
-    build: ./sidecar
-    image: ha-staging-sidecar:local
-    container_name: ha-staging-sidecar
+  staging-kit:
+    build: .
+    image: ha-staging-kit:local
+    container_name: ha-staging-kit
     restart: unless-stopped
-    network_mode: host
     env_file: .env
+    ports:
+      - "${CONSOLE_PORT:-8081}:8080"
+      - "${MIRROR_PORT:-1883}:1883"
     volumes:
+      - ./.env:/kit/.env:rw
+      - .:/kit
       - ${HA_CONFIG_REPO}:/repo:ro
       - ${HA_STAGING_CONFIG}:/ha-config
       - ${SIDECAR_DATA}:/sidecar-data
-    environment:
-      SIDECAR_CONFIG: /sidecar-data/config.env
-
-  mosquitto-mirror:
-    image: eclipse-mosquitto:2
-    container_name: mosquitto-mirror
-    restart: unless-stopped
-    env_file: .env
-    ports:
-      - "${MIRROR_PORT:-1883}:1883"
-    volumes:
-      - ${MIRROR_DATA}/config:/mosquitto/config
-      - ${MIRROR_DATA}/data:/mosquitto/data
-      - ${MIRROR_DATA}/log:/mosquitto/log
-
-  ha-staging-console:
-    build: ./console
-    image: ha-staging-console:local
-    container_name: ha-staging-console
-    restart: unless-stopped
-    env_file: .env
-    ports:
-      - "${CONSOLE_PORT:-8080}:8080"
-    volumes:
-      - ${SIDECAR_DATA}:/sidecar-data
       - ${MIRROR_DATA}:${MIRROR_DATA}
-      - ${HA_STAGING_CONFIG}:${HA_STAGING_CONFIG}:ro
-      - .:/kit
+      - ${HA_CONFIG_REPO}:${HA_CONFIG_REPO}:ro
+      - /mnt/user:/mnt/user:ro
+      - /mnt/cache:/mnt/cache:ro
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       SIDECAR_DATA: /sidecar-data
+      SIDECAR_CONFIG: /sidecar-data/config.env
       KIT_ROOT: /kit
-      SIDECAR_CONTAINER: ha-staging-sidecar
-      MIRROR_CONTAINER: mosquitto-mirror
+      KIT_CONTAINER: ha-staging-kit
+      REPO_DIR: /repo
+      HA_CONFIG: /ha-config
