@@ -16,6 +16,7 @@ const STEPS = [
   { id: "prod", title: "Production connection" },
   { id: "staging", title: "Staging connection" },
   { id: "storage", title: "Storage sync" },
+  { id: "prod-git-init", title: "Prod HA git" },
   { id: "mirror", title: "MQTT mirror" },
   { id: "health", title: "Health checks" },
   { id: "done", title: "Done" },
@@ -268,6 +269,10 @@ export default function OnboardingPage() {
             <StorageStep status={status} onDone={() => refresh(false)} onNext={next} showBack={step > 0} onBack={back} />
           )}
 
+          {current.id === "prod-git-init" && status && (
+            <ProdGitInitStep status={status} onDone={() => refresh(false)} onNext={next} showBack={step > 0} onBack={back} />
+          )}
+
           {current.id === "mirror" && status && (
             <MirrorStep
               status={status}
@@ -388,6 +393,7 @@ export default function OnboardingPage() {
             current.id !== "staging" &&
             current.id !== "mirror" &&
             current.id !== "storage" &&
+            current.id !== "prod-git-init" &&
             current.id !== "health" &&
             current.id !== "welcome" && (
               <StepFooter showBack={step > 0} onBack={back} onNext={next} />
@@ -782,6 +788,53 @@ function MirrorStep({
         nextLabel={saving ? "Saving…" : "Save & continue"}
         primaryDisabled={saving || !canContinue}
       />
+    </>
+  );
+}
+
+function ProdGitInitStep({
+  status,
+  onDone,
+  onNext,
+  showBack,
+  onBack,
+}: {
+  status: OnboardingStatus;
+  onDone: () => void;
+  onNext: () => void;
+  showBack: boolean;
+  onBack: () => void;
+}) {
+  const completed = status.completedSteps.includes("prod-git-init");
+  const hasSsh = status.prod.hasSshKey && !!status.prod.sshTarget;
+
+  return (
+    <>
+      <h2>Prod HA git setup</h2>
+      <p>
+        Initialise your production HA config directory as a git repo so the kit can deploy
+        config changes directly to it over SSH.
+      </p>
+      <ul className="checklist">
+        <li>Runs <code>git init</code> on the prod config directory — <strong>no files are changed</strong></li>
+        <li>Sets the git remote to match the kit&apos;s config repo</li>
+        <li>The first &ldquo;Deploy to prod&rdquo; will push config from <code>main</code> and reload HA</li>
+        <li>Safe to run again — idempotent</li>
+      </ul>
+      {!hasSsh && (
+        <p className="msg warn">SSH not configured — complete the Production connection step first.</p>
+      )}
+      {completed && <p className="msg ok">Prod HA git initialised in this setup session.</p>}
+      <div className="step-actions-right ops-actions">
+        <ActionButton
+          label="Init prod HA git"
+          toastPreset="prod-git-init"
+          onRun={onboardingApi.prodGitInit}
+          onDone={onDone}
+          disabled={!hasSsh}
+        />
+      </div>
+      <StepFooter showBack={showBack} onBack={onBack} onNext={onNext} showSkip nextLabel="Next" />
     </>
   );
 }

@@ -51,9 +51,15 @@ const presets: Record<string, ActionToastPreset> = {
     successIcon: "🚀",
     errorIcon: "📦💥",
   },
+  "prod-git-init": {
+    success: "Prod HA git initialised — next deploy will apply config from main.",
+    error: "Git init failed — check SSH access and prod config path.",
+    successIcon: "🗂️",
+    errorIcon: "🔧💥",
+  },
   "deploy-prod": {
-    success: "Promoted to main — GitHub Actions will update HA Green.",
-    error: "Deploy to prod failed — check git merge/push output.",
+    success: "Deployed to prod — config bundled, applied, and reloaded on HA Green.",
+    error: "Deploy to prod failed — check git merge/push and SSH to prod.",
     successIcon: "✅",
     errorIcon: "🚨",
   },

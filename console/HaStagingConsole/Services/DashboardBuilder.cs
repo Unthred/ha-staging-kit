@@ -328,7 +328,7 @@ public sealed partial class DashboardBuilder(
         var label = string.IsNullOrWhiteSpace(hash) ? "main" : hash;
         return new OperationResult(
             true,
-            $"Promoted staging → main ({label}). GitHub Actions will deploy to HA Green.",
+            $"Promoted staging → main ({label}). Pushing to prod HA…",
             pushOut);
     }
 

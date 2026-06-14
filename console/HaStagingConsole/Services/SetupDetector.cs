@@ -11,6 +11,9 @@ public sealed class SetupDetector(
 {
     static readonly string[] SupervisorPaths = ["/api/supervisor/info", "/api/hassio/info"];
 
+    bool? _supervisorCacheProd;
+    bool? _supervisorCacheStaging;
+
     public async Task<(DetectedSetupSnapshot Detected, bool StateChanged)> DetectAndMergeAsync(
         OnboardingState state,
         CancellationToken ct)
@@ -287,7 +290,7 @@ public sealed class SetupDetector(
             var probeUrl = FirstNonEmpty(resolvedProdUrl, tokenUrl);
             if (!string.IsNullOrWhiteSpace(probeUrl) && !string.IsNullOrWhiteSpace(token))
             {
-                prodType = await ProbeInstallTypeAsync(probeUrl, token, ct);
+                prodType = await ProbeInstallTypeAsync(probeUrl, token, ct, isProd: true);
                 if (prodType is not null)
                     sources["topology.prodHaType"] = "prod HA API (supervisor probe)";
             }
@@ -408,8 +411,18 @@ public sealed class SetupDetector(
         return null;
     }
 
-    async Task<string> ProbeInstallTypeAsync(string url, string token, CancellationToken ct) =>
-        await ProbeSupervisorAsync(url, token, ct) ? "ha_os" : "docker";
+    async Task<string> ProbeInstallTypeAsync(string url, string token, CancellationToken ct, bool isProd = false)
+    {
+        if (isProd)
+        {
+            if (!_supervisorCacheProd.HasValue)
+                _supervisorCacheProd = await ProbeSupervisorAsync(url, token, ct);
+            return _supervisorCacheProd.Value ? "ha_os" : "docker";
+        }
+        if (!_supervisorCacheStaging.HasValue)
+            _supervisorCacheStaging = await ProbeSupervisorAsync(url, token, ct);
+        return _supervisorCacheStaging.Value ? "ha_os" : "docker";
+    }
 
     async Task<bool> ProbeSupervisorAsync(string url, string token, CancellationToken ct)
     {

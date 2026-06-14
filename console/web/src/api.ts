@@ -518,6 +518,7 @@ export const onboardingApi = {
   browse: (path?: string) => api<BrowseResult>(`/api/onboarding/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   deploy: () => api<DeployResult>("/api/onboarding/deploy", { method: "POST" }),
   storageSync: () => api<DeployResult>("/api/onboarding/storage-sync", { method: "POST" }),
+  prodGitInit: () => api<DeployResult>("/api/onboarding/prod-git-init", { method: "POST" }),
   deployMirror: () => api<DeployResult>("/api/onboarding/deploy-mirror", { method: "POST" }),
   health: () => api<HealthCheck[]>("/api/onboarding/health", { method: "POST" }),
   healthPlan: () => api<HealthCheckPlanItem[]>("/api/onboarding/health/plan"),

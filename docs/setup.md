@@ -18,6 +18,7 @@ For **person / presence sync** (prod read + staging write tokens), see [person-p
 - [ ] **Prod HA** on same LAN
 - [ ] Long-lived tokens: prod (read), staging (write)
 - [ ] SSH key authorized on prod for secrets + `.storage` sync
+- [ ] SSH user has **passwordless `sudo`** on prod — required for `git init` / `git reset` in the root-owned config directory (e.g. `/homeassistant` on HA OS)
 
 ## 1. Clone and configure
 

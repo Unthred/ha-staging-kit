@@ -11,6 +11,10 @@ public sealed class StagingTargetBuilder(
 {
     static readonly string[] SupervisorPaths = ["/api/supervisor/info", "/api/hassio/info"];
 
+    // Supervisor availability doesn't change during a session — cache indefinitely once known.
+    bool? _supervisorAvailableCache;
+    string? _supervisorCacheUrl;
+
     public async Task<StagingTargetSnapshot> BuildAsync(
         OnboardingState state,
         IReadOnlyDictionary<string, string> env,
@@ -37,7 +41,7 @@ public sealed class StagingTargetBuilder(
             version = configProbe.Version;
             locationName = configProbe.LocationName;
             configDir = configProbe.ConfigDir;
-            supervisorAvailable = await ProbeSupervisorAsync(probeUrl, token, ct);
+            supervisorAvailable = await GetSupervisorAvailableAsync(probeUrl, token, ct);
         }
 
         var containerRunning = false;
@@ -149,6 +153,16 @@ public sealed class StagingTargetBuilder(
         {
             return new ConfigProbeResult(false, null, null, null);
         }
+    }
+
+    async Task<bool> GetSupervisorAvailableAsync(string url, string token, CancellationToken ct)
+    {
+        if (_supervisorCacheUrl == url && _supervisorAvailableCache.HasValue)
+            return _supervisorAvailableCache.Value;
+        var result = await ProbeSupervisorAsync(url, token, ct);
+        _supervisorAvailableCache = result;
+        _supervisorCacheUrl = url;
+        return result;
     }
 
     async Task<bool> ProbeSupervisorAsync(string url, string token, CancellationToken ct)

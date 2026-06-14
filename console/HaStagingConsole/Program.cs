@@ -244,6 +244,17 @@ app.MapPost("/api/onboarding/storage-sync", async (OnboardingBootstrap bootstrap
     return Results.Ok(new DeployResult(result.Ok, result.Ok ? "Storage sync completed" : "Storage sync failed", result.Message));
 });
 
+app.MapPost("/api/onboarding/prod-git-init", async (OnboardingBootstrap bootstrap, OnboardingStore store, OperationsService ops, CancellationToken ct) =>
+{
+    var result = await ops.ProdGitInitAsync(ct);
+    if (result.Ok)
+    {
+        var state = bootstrap.LoadOrBootstrap();
+        store.MarkStep(state, "prod-git-init", 7);
+    }
+    return Results.Ok(new DeployResult(result.Ok, result.Message, result.LogTail));
+});
+
 app.MapPost("/api/onboarding/deploy-mirror", async (KitPaths paths, OnboardingBootstrap bootstrap, OnboardingStore store, DockerRunner docker, CancellationToken ct) =>
 {
     var result = await docker.RunScriptAsync(paths.DeployMirrorScript, "", ct);

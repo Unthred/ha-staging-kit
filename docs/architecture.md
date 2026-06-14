@@ -18,23 +18,28 @@ Staging-only runtime (log counters, recorder retention) is written by the sideca
 | **Git (`staging` branch)** | Work in progress; kit applies to staging |
 | **Git (`main` branch)** | Approved releases + live prod backup |
 
-Prod deploy from git is configured in the **HomeAssistant config repo** (GitHub Actions + self-hosted runner) — not in this kit.
+Prod deploy is handled entirely by the kit: after merging to `main` and pushing to GitHub, the kit SSHes to prod HA, runs `git pull` on its config directory, and triggers a config reload. No GitHub Actions runner is required.
+
+**SSH is the only prod-deploy mechanism supported today.** Prod HA must have SSH accessible from the kit container and its config directory must be initialised as a git clone of the repo during onboarding. The SSH user also needs **passwordless `sudo`** — on HA OS the config directory (`/homeassistant`) is root-owned, so `git init` and `git reset` require `sudo`. A webhook/HA-automation-based alternative (for installs without SSH or passwordless sudo) is tracked in [backlog.md](backlog.md).
 
 ## Flow
 
 ```
-Agent edits HA config git (staging branch)
+Agent / UI edits HA config git (staging branch)
         │
         ▼
-ha-staging-kit ──rsync──► staging HA appdata (workbench)
+ha-staging-kit sidecar ──apply──► staging HA config dir (workbench)
         │
         ├── REST poll ──► prod HA (read person/tracker — live truth)
         ├── REST write ──► staging HA
-        └── SSH rsync ──► prod secrets + .storage subset (baseline from live prod)
+        └── SSH ──► prod secrets + .storage subset (baseline from live prod)
 
 prod Mosquitto ──bridge──► mosquitto-mirror ──► staging HA MQTT (read-only default)
 
-git main ──GitHub Actions prod-deploy──► prod HA
+UI "Deploy to prod"
+  ──git merge staging→main + push──► GitHub
+  ──kit SSH──► prod HA: git pull + HA reload
+
 prod HA ──backup──► git main
 ```
 
