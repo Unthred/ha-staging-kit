@@ -85,63 +85,54 @@ export function GitWorkflowActions({
         <p className="dash-git-workflow-lead muted">Push, apply, and restart — confirm before prod deploy.</p>
       )}
 
-      <div className="dash-git-workflow-actions">
-        <button
-          type="button"
-          className="btn dash-git-workflow-btn"
-          disabled={!shipEnabled || busy !== null}
-          title={hint ?? undefined}
-          onClick={() => {
-            setConfirmProd(false);
-            setConfirmShip(true);
-          }}
-        >
-          Ship to staging
-        </button>
-        <button
-          type="button"
-          className="btn danger dash-git-workflow-btn"
-          disabled={!prodEnabled || busy !== null}
-          title={prodHint ?? undefined}
-          onClick={() => {
-            setConfirmShip(false);
-            setConfirmProd(true);
-          }}
-        >
-          Deploy to prod
-        </button>
-      </div>
-
-      {confirmShip && (
-        <div className="confirm-box dash-git-workflow-confirm">
+      {confirmShip ? (
+        <div className="dash-git-workflow-confirm">
           <p className="dash-git-workflow-confirm-title">Ship to staging?</p>
           <p className="muted dash-git-workflow-confirm-detail">{shipToStagingSummary(git, drift)}</p>
           <div className="dash-git-workflow-confirm-actions">
-            <button type="button" className="btn" disabled={busy !== null} onClick={() => void runShip()}>
-              {busy === "ship" ? "Shipping…" : "Yes, ship"}
+            <button type="button" className="btn dash-git-workflow-btn" disabled={busy !== null} onClick={() => void runShip()}>
+              {busy === "ship" ? "Shipping…" : "Confirm ship"}
             </button>
-            <button type="button" className="btn secondary" disabled={busy !== null} onClick={() => setConfirmShip(false)}>
+            <button type="button" className="btn dash-git-workflow-btn dash-git-workflow-btn-cancel" disabled={busy !== null} onClick={() => setConfirmShip(false)}>
               Cancel
             </button>
           </div>
         </div>
-      )}
-
-      {confirmProd && (
-        <div className="confirm-box dash-git-workflow-confirm">
+      ) : confirmProd ? (
+        <div className="dash-git-workflow-confirm dash-git-workflow-confirm-prod">
           <p className="dash-git-workflow-confirm-title dash-git-workflow-confirm-danger">Deploy to production?</p>
           <p className="muted dash-git-workflow-confirm-detail">
-            Merges <code>{git.branch ?? "staging"}</code> → <code>main</code>, pushes to GitHub, triggers Actions to HA
-            Green.
+            Merges <code>{git.branch ?? "staging"}</code> → <code>main</code>, pushes to GitHub, deploys to HA Green.
           </p>
           <div className="dash-git-workflow-confirm-actions">
-            <button type="button" className="btn danger" disabled={busy !== null} onClick={() => void runDeployProd()}>
-              {busy === "prod" ? "Deploying…" : "Yes, deploy"}
+            <button type="button" className="btn danger dash-git-workflow-btn" disabled={busy !== null} onClick={() => void runDeployProd()}>
+              {busy === "prod" ? "Deploying…" : "Confirm deploy"}
             </button>
-            <button type="button" className="btn secondary" disabled={busy !== null} onClick={() => setConfirmProd(false)}>
+            <button type="button" className="btn dash-git-workflow-btn dash-git-workflow-btn-cancel" disabled={busy !== null} onClick={() => setConfirmProd(false)}>
               Cancel
             </button>
           </div>
+        </div>
+      ) : (
+        <div className="dash-git-workflow-actions">
+          <button
+            type="button"
+            className="btn dash-git-workflow-btn"
+            disabled={!shipEnabled || busy !== null}
+            title={hint ?? undefined}
+            onClick={() => setConfirmShip(true)}
+          >
+            Ship to staging
+          </button>
+          <button
+            type="button"
+            className="btn danger dash-git-workflow-btn"
+            disabled={!prodEnabled || busy !== null}
+            title={prodHint ?? undefined}
+            onClick={() => setConfirmProd(true)}
+          >
+            Deploy to prod
+          </button>
         </div>
       )}
     </div>

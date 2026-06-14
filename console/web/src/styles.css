@@ -3403,26 +3403,78 @@ code {
 }
 
 .dash-git-workflow-lead {
-  margin: 0 0 0.55rem;
+  margin: 0 0 0.65rem;
   font-size: 0.78rem;
 }
 
-.dash-git-workflow-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
+/* Compact (panel) context: top border separator */
+.dash-config-repo-panel .dash-git-workflow {
+  border-top: 1px solid var(--dash-border);
+  padding-top: 0.9rem;
+  margin-top: 0.25rem;
 }
 
+/* Both the main action row and confirm action row share grid layout */
+.dash-git-workflow-actions,
+.dash-git-workflow-confirm-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+/* All workflow buttons: equal size, no inherited margin */
 .dash-git-workflow-btn {
-  font-size: 0.78rem;
+  margin: 0;
+  font-size: 0.8rem;
+  padding: 0.5rem 0.75rem;
+  width: 100%;
+  text-align: center;
 }
 
+/* Ship / confirm-ship button — outlined, not filled */
+.dash-git-workflow-btn:not(.danger):not(.dash-git-workflow-btn-cancel) {
+  background: transparent;
+  border: 1px solid var(--dash-border);
+  color: var(--text);
+}
+.dash-git-workflow-btn:not(.danger):not(.dash-git-workflow-btn-cancel):hover:not(:disabled) {
+  border-color: var(--muted);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* Cancel — subtler ghost */
+.dash-git-workflow-btn-cancel {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+}
+.dash-git-workflow-btn-cancel:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--dash-border);
+}
+
+/* Deploy / confirm-deploy — danger already styled by .btn.danger,
+   but soften it to match the panel's dark aesthetic */
+.dash-git-workflow-btn.danger {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.28);
+  color: #fca5a5;
+  font-weight: 500;
+}
+.dash-git-workflow-btn.danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.18);
+  border-color: rgba(239, 68, 68, 0.45);
+}
+
+/* Confirm panel — neutral, no alarming red box */
 .dash-git-workflow-confirm {
-  margin-top: 0.55rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
 }
 
 .dash-git-workflow-confirm-title {
-  margin: 0 0 0.25rem;
+  margin: 0;
   font-size: 0.82rem;
   font-weight: 600;
 }
@@ -3432,15 +3484,9 @@ code {
 }
 
 .dash-git-workflow-confirm-detail {
-  margin: 0 0 0.5rem;
-  font-size: 0.78rem;
+  margin: 0 0 0.35rem;
+  font-size: 0.76rem;
   line-height: 1.4;
-}
-
-.dash-git-workflow-confirm-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
 }
 
 .dash-git-workflow-compact .dash-git-workflow-lead {
