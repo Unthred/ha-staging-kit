@@ -14,7 +14,7 @@ public sealed partial class DashboardBuilder(
     public async Task<GitSnapshotStatus> GetGitSnapshotAsync(Dictionary<string, string> env, CancellationToken ct)
     {
         if (!Directory.Exists("/repo/.git"))
-            return new GitSnapshotStatus(false, null, null, null, null, false, 0, false, 0, false, 0, [], [], [], [], null, null, null);
+            return new GitSnapshotStatus(false, null, null, null, null, false, 0, false, 0, false, 0, [], [], [], [], null, null, null, null, 0, null, 0);
 
         var branch = env.GetValueOrDefault("HA_BRANCH", "staging");
         var head = await RunGitAsync("/repo", "rev-parse", "--short", "HEAD");
@@ -40,6 +40,42 @@ public sealed partial class DashboardBuilder(
         if (int.TryParse(aheadRaw, out var a)) ahead = a;
         if (int.TryParse(behindRaw, out var b)) behind = b;
 
+        // Staging → main gap: how many commits are on origin/staging not yet merged to origin/main
+        int? stagingAheadOfMain = null;
+        var stagingHaChanges = 0;
+        var stagingMainCountRaw = await RunGitAsync("/repo", "rev-list", "--count", "origin/main..origin/staging");
+        if (int.TryParse(stagingMainCountRaw, out var sam))
+        {
+            stagingAheadOfMain = sam;
+            if (sam > 0)
+            {
+                var diff = await RunGitAsync("/repo", "diff", "--name-only", "origin/main..origin/staging");
+                stagingHaChanges = diff
+                    .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Count(IsHaDeployPath);
+            }
+        }
+
+        // Main → prod HA gap: how many commits on origin/main since the last kit deploy
+        int? mainAheadOfProdHa = null;
+        var mainHaChangesForProdHa = 0;
+        var lastDeployedSha = ReadLastDeployedSha();
+        if (!string.IsNullOrWhiteSpace(lastDeployedSha))
+        {
+            var mainCountRaw = await RunGitAsync("/repo", "rev-list", "--count", $"{lastDeployedSha}..origin/main");
+            if (int.TryParse(mainCountRaw, out var map))
+            {
+                mainAheadOfProdHa = map;
+                if (map > 0)
+                {
+                    var diff = await RunGitAsync("/repo", "diff", "--name-only", $"{lastDeployedSha}..origin/main");
+                    mainHaChangesForProdHa = diff
+                        .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                        .Count(IsHaDeployPath);
+                }
+            }
+        }
+
         return new GitSnapshotStatus(
             true,
             string.IsNullOrWhiteSpace(currentBranch) ? branch : currentBranch,
@@ -58,7 +94,11 @@ public sealed partial class DashboardBuilder(
             repoPaths,
             ahead,
             behind,
-            string.IsNullOrWhiteSpace(remoteUrl) ? null : remoteUrl);
+            string.IsNullOrWhiteSpace(remoteUrl) ? null : remoteUrl,
+            stagingAheadOfMain,
+            stagingHaChanges,
+            mainAheadOfProdHa,
+            mainHaChangesForProdHa);
     }
 
     static (int HaCount, int RepoCount, IReadOnlyList<string> HaSamples, IReadOnlyList<string> RepoSamples, IReadOnlyList<string> HaFiles, IReadOnlyList<string> RepoFiles) ClassifyGitStatus(
@@ -123,6 +163,26 @@ public sealed partial class DashboardBuilder(
         }
 
         return !string.Equals(path, "secrets.yaml", StringComparison.OrdinalIgnoreCase);
+    }
+
+    // Broader check used for staging→main and main→prod HA diffs — matches what OperationsService deploys.
+    static bool IsHaDeployPath(string path)
+    {
+        path = path.Replace('\\', '/').TrimStart('/');
+        if (path.Length == 0) return false;
+
+        foreach (var dir in (string[])["packages/", "python_scripts/", "custom_components/", "blueprints/", "www/", "themes/", "lovelace/"])
+            if (path.StartsWith(dir, StringComparison.OrdinalIgnoreCase)) return true;
+
+        if (path.Contains('/')) return false;
+        if (!path.EndsWith(".yaml", StringComparison.OrdinalIgnoreCase) && !path.EndsWith(".yml", StringComparison.OrdinalIgnoreCase)) return false;
+        return !string.Equals(path, "secrets.yaml", StringComparison.OrdinalIgnoreCase);
+    }
+
+    string ReadLastDeployedSha()
+    {
+        try { return File.ReadAllText(paths.LastProdDeployShaFile).Trim(); }
+        catch { return ""; }
     }
 
     public async Task<GitFileDiffResult?> GetGitFileDiffAsync(string relativePath, CancellationToken ct)

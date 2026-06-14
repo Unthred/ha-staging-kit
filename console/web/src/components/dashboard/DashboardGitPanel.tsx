@@ -107,6 +107,30 @@ export function DashboardGitPanel({
           <span className="dash-stat-value">{git.commitsBehind ?? 0}</span>
           <span className="dash-stat-label">Behind origin</span>
         </div>
+        {git.stagingAheadOfMain != null && (
+          <div className="dash-stat-card dash-config-repo-stat">
+            <span className="dash-stat-value">{git.stagingAheadOfMain}</span>
+            <span className="dash-stat-label">
+              {git.stagingAheadOfMain === 0
+                ? "Staging on main"
+                : (git.stagingHaChanges ?? 0) === 0
+                ? "Staged · docs only"
+                : `Staged · ${git.stagingHaChanges} HA files`}
+            </span>
+          </div>
+        )}
+        {git.mainAheadOfProdHa != null && (
+          <div className="dash-stat-card dash-config-repo-stat">
+            <span className="dash-stat-value">{git.mainAheadOfProdHa}</span>
+            <span className="dash-stat-label">
+              {git.mainAheadOfProdHa === 0
+                ? "Prod HA current"
+                : (git.mainHaChangesForProdHa ?? 0) === 0
+                ? "Prod HA · docs only"
+                : `Prod HA · ${git.mainHaChangesForProdHa} HA files`}
+            </span>
+          </div>
+        )}
         <div className="dash-stat-card dash-config-repo-stat">
           <span className="dash-stat-value dash-stat-value-mono">{drift?.lastAppliedCommit ?? "—"}</span>
           <span className="dash-stat-label">Last applied</span>

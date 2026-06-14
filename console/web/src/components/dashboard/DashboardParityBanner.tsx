@@ -49,6 +49,34 @@ export function DashboardParityBanner({
         {git?.isRepoDirty && representation.gitClean && (
           <CheckItem ok={false} warn label={`Docs (${git.repoChangedFileCount})`} />
         )}
+        {git?.stagingAheadOfMain != null && (
+          <CheckItem
+            ok={git.stagingAheadOfMain === 0}
+            warn={git.stagingAheadOfMain > 0}
+            label={
+              git.stagingAheadOfMain === 0
+                ? "Staging on main"
+                : (git.stagingHaChanges ?? 0) === 0
+                ? `Merge pending · ${git.stagingAheadOfMain} docs only`
+                : `Deploy needed · ${git.stagingHaChanges} HA file${(git.stagingHaChanges ?? 0) === 1 ? "" : "s"}`
+            }
+          />
+        )}
+        {git?.configured && (
+          <CheckItem
+            ok={git.mainAheadOfProdHa === 0 || (git.mainAheadOfProdHa != null && (git.mainHaChangesForProdHa ?? 0) === 0)}
+            warn={git.mainAheadOfProdHa == null || (git.mainAheadOfProdHa ?? 0) > 0}
+            label={
+              git.mainAheadOfProdHa == null
+                ? "Prod HA untracked"
+                : git.mainAheadOfProdHa === 0
+                ? "Prod HA current"
+                : (git.mainHaChangesForProdHa ?? 0) === 0
+                ? "Prod HA current · docs pending"
+                : `Prod HA behind · ${git.mainHaChangesForProdHa} HA file${(git.mainHaChangesForProdHa ?? 0) === 1 ? "" : "s"}`
+            }
+          />
+        )}
       </ul>
 
       {git?.configured && (

@@ -199,6 +199,10 @@ export type GitSnapshot = {
   commitsAhead?: number | null;
   commitsBehind?: number | null;
   remoteUrl?: string | null;
+  stagingAheadOfMain?: number | null;
+  stagingHaChanges?: number | null;
+  mainAheadOfProdHa?: number | null;
+  mainHaChangesForProdHa?: number | null;
 };
 
 export type PersonSyncSnapshot = {

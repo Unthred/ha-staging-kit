@@ -60,13 +60,43 @@ public sealed class OperationsService(
             JoinLogs(logs, restart.LogTail));
     }
 
+    // Files in the config repo that HA actually reads — changes here trigger a prod deploy + reload.
+    static readonly string[] HaConfigPaths =
+    [
+        "automations.yaml", "scripts.yaml", "configuration.yaml",
+        "scenes.yaml", "groups.yaml", "notify.yaml",
+        "packages/", "python_scripts/", "custom_components/",
+        "blueprints/", "www/", "themes/", "lovelace/",
+    ];
+
+    // Paths to exclude from the prod HA working tree (docs, host scripts, editor rules, etc.)
+    // Uses git sparse-checkout pattern syntax: /* includes everything, !/<path> excludes.
+    // Note: scripts/ (directory) is excluded; scripts.yaml (HA scripts file) is NOT — it matches /*.
+    const string SparseExcludeContent =
+        "/*\n!/docs/\n!/scripts/\n!/.cursor/\n!/.github/\n" +
+        "!/AGENTS.md\n!/WORKFLOW.md\n!/CLAUDE.md\n!/CHANGELOG.md\n" +
+        "!/.cursorrules\n!/README.md\n";
+
     public async Task<OperationResult> DeployToProdAsync(CancellationToken ct)
     {
+        // Capture main HEAD before merge so we can diff what changed
+        var (headOk, prevHead, _) = await RunBashAsync("git -C /repo rev-parse main 2>/dev/null", ct);
+        var prevMainHead = headOk ? prevHead.Trim() : "";
+
         var promote = await dashboard.PromoteStagingToMainAsync(ct);
         if (!promote.Ok)
             return promote;
 
         var logs = new List<string> { promote.Message };
+
+        // If only non-HA files changed, skip the prod HA deploy and reload entirely
+        if (!string.IsNullOrWhiteSpace(prevMainHead) && !await HaConfigChangedAsync(prevMainHead, ct))
+        {
+            return new OperationResult(
+                true,
+                "Merged to main — docs/scripts only, no HA config changed. Prod HA not updated.",
+                promote.LogTail);
+        }
 
         var pull = await SshGitPullAsync(ct);
         logs.Add(pull.Message);
@@ -80,10 +110,22 @@ public sealed class OperationsService(
         if (!reload.Ok)
             return Fail(logs, reload.LogTail);
 
+        // Record the deployed main HEAD so the dashboard can show main→prod HA gap
+        await WriteLastDeployedShaAsync(ct);
+
         return new OperationResult(
             true,
-            "Deployed to prod — pushed to GitHub, pulled on prod HA, reloaded config",
+            "Deployed to prod — pushed to GitHub, applied config on prod HA, reloaded",
             JoinLogs(logs, reload.LogTail));
+    }
+
+    // Returns true if any HA config file changed between fromHead and current main.
+    async Task<bool> HaConfigChangedAsync(string fromHead, CancellationToken ct)
+    {
+        var pathArgs = string.Join(" ", HaConfigPaths.Select(ShQ));
+        var (ok, stdout, _) = await RunBashAsync(
+            $"git -C /repo diff --name-only {ShQ(fromHead)} main -- {pathArgs}", ct);
+        return !ok || !string.IsNullOrWhiteSpace(stdout);
     }
 
     // Deploy: bundle the local main and pipe it to prod via SSH — prod HA never needs GitHub credentials.
@@ -117,6 +159,7 @@ public sealed class OperationsService(
     }
 
     // Onboarding: initialise prod HA config dir as a git repo — non-destructive, zero file changes.
+    // Also sets up sparse checkout so deploys never write docs/scripts/editor-rules to prod HA.
     public async Task<OperationResult> ProdGitInitAsync(CancellationToken ct)
     {
         var target = ParseProdTarget();
@@ -140,15 +183,15 @@ public sealed class OperationsService(
 
         if (checkOk && checkOut.Trim() == "yes")
         {
-            var existingRemote = "";
+            // Idempotent: (re)apply remote + sparse checkout without touching any files
             if (!string.IsNullOrWhiteSpace(remoteUrl))
             {
-                // Update remote to match kit (idempotent)
                 var setRemoteCmd = $"{g} remote set-url origin {ShQ(remoteUrl)} 2>/dev/null || {g} remote add origin {ShQ(remoteUrl)}";
                 await RunBashAsync($"ssh {sshBase} {ShQ(userHost)} {ShQ(setRemoteCmd)}", ct);
-                existingRemote = $" (remote updated to {remoteUrl})";
             }
-            return new OperationResult(true, $"Prod HA config dir is already a git repo{existingRemote}", null);
+            await RunBashAsync($"ssh {sshBase} {ShQ(userHost)} {ShQ(SparseCheckoutCmd(configPath))}", ct);
+            var existingNote = string.IsNullOrWhiteSpace(remoteUrl) ? "" : $" (remote: {remoteUrl})";
+            return new OperationResult(true, $"Prod HA git repo already initialised — sparse checkout updated{existingNote}", null);
         }
 
         // Not initialised — set up git structure without touching any files
@@ -159,8 +202,10 @@ public sealed class OperationsService(
         };
         if (!string.IsNullOrWhiteSpace(remoteUrl))
             initSteps.Add($"{g} remote add origin {ShQ(remoteUrl)}");
+        initSteps.Add(SparseCheckoutCmd(configPath));
+        initSteps.Add("echo initialized");
 
-        var initCmd = string.Join(" && ", initSteps) + " && echo initialized";
+        var initCmd = string.Join(" && ", initSteps);
         var (initOk, initOut, initErr) = await RunBashAsync(
             $"ssh {sshBase} {ShQ(userHost)} {ShQ(initCmd)}", ct);
 
@@ -170,8 +215,20 @@ public sealed class OperationsService(
         var remoteNote = string.IsNullOrWhiteSpace(remoteUrl) ? " (remote not set — configure manually)" : $" with remote {remoteUrl}";
         return new OperationResult(
             true,
-            $"Prod HA config dir initialised{remoteNote}. No files changed — next deploy will apply config.",
+            $"Prod HA config dir initialised{remoteNote} with sparse checkout. No files changed — next deploy will apply config.",
             initOut);
+    }
+
+    // Configures git sparse checkout on the remote config dir (idempotent).
+    // docs/, scripts/, editor config and meta files are excluded; all HA YAML passes through.
+    string SparseCheckoutCmd(string configPath)
+    {
+        var g = $"sudo git -C {ShQ(configPath)}";
+        var sparseFile = $"{configPath}/.git/info/sparse-checkout";
+        // Replace actual newlines with \n so printf on the remote shell can emit them
+        var sparseContent = SparseExcludeContent.Replace("\n", "\\n");
+        return $"{g} config core.sparseCheckout true && " +
+               $"printf {ShQ(sparseContent)} | sudo tee {ShQ(sparseFile)} > /dev/null";
     }
 
     async Task<OperationResult> ReloadProdHaAsync(CancellationToken ct)
@@ -248,6 +305,17 @@ public sealed class OperationsService(
         if (string.IsNullOrWhiteSpace(configPath)) configPath = "/config";
         if (!userHost.Contains('@')) userHost = $"root@{userHost}";
         return (userHost, configPath);
+    }
+
+    async Task WriteLastDeployedShaAsync(CancellationToken ct)
+    {
+        try
+        {
+            var (ok, sha, _) = await RunBashAsync("git -C /repo rev-parse origin/main 2>/dev/null", ct);
+            if (ok && !string.IsNullOrWhiteSpace(sha))
+                File.WriteAllText(paths.LastProdDeployShaFile, sha.Trim());
+        }
+        catch { }
     }
 
     string SshBase() =>

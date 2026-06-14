@@ -137,7 +137,11 @@ public sealed record GitSnapshotStatus(
     IReadOnlyList<string> RepoChangedFiles,
     int? CommitsAhead,
     int? CommitsBehind,
-    string? RemoteUrl);
+    string? RemoteUrl,
+    int? StagingAheadOfMain,
+    int StagingHaChanges,
+    int? MainAheadOfProdHa,
+    int MainHaChangesForProdHa);
 
 public sealed record GitFileDiffResult(string Path, string Status, string Diff);
 
