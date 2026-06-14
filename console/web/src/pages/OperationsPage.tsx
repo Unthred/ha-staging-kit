@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 import { onboardingApi, operationsApi, settingsApi, toApiError, type SettingsView } from "../api";
 import { ActionButton } from "../components/ActionButton";
 import { Chip } from "../components/Chip";
+import { GitWorkflowActions } from "../components/dashboard/GitWorkflowActions";
 import { MirrorControlModeToggle } from "../components/MirrorControlModeToggle";
 import { MqttMirrorInstructions } from "../components/MqttMirrorInstructions";
+import { useDashboardStatus } from "../hooks/useDashboardStatus";
 
 const SECTIONS = [
   {
@@ -44,6 +46,7 @@ export default function OperationsPage() {
   const [sectionId, setSectionId] = useState<SectionId>("config-sync");
   const [gitConfigured, setGitConfigured] = useState(true);
   const [settings, setSettings] = useState<SettingsView | null>(null);
+  const { data: dashboard, refresh: refreshDashboard } = useDashboardStatus(60000);
 
   useEffect(() => {
     onboardingApi.status().then((s) => setGitConfigured(s.gitConfigured)).catch(() => setGitConfigured(false));
@@ -116,11 +119,22 @@ export default function OperationsPage() {
               <div className="step-actions-right ops-actions">
                 <ActionButton
                   label="Apply staging config"
+                  toastPreset="apply-config"
                   onRun={operationsApi.applyConfig}
                   disabled={!gitConfigured}
                 />
-                <ActionButton label="Person poll now" onRun={operationsApi.personPoll} variant="secondary" />
+                <ActionButton
+                  label="Person poll now"
+                  toastPreset="person-poll"
+                  onRun={operationsApi.personPoll}
+                  variant="secondary"
+                />
               </div>
+              <GitWorkflowActions
+                git={dashboard?.git}
+                drift={dashboard?.configDrift}
+                onDone={() => void refreshDashboard()}
+              />
             </>
           )}
 
@@ -230,7 +244,7 @@ export default function OperationsPage() {
                 <li>Does not restart prod or the kit container itself</li>
               </ul>
               <div className="step-actions-right ops-actions">
-                <ActionButton label="Restart staging HA" onRun={operationsApi.restartStaging} variant="secondary" />
+                <ActionButton label="Restart staging HA" toastPreset="restart-staging" onRun={operationsApi.restartStaging} variant="secondary" />
               </div>
             </>
           )}

@@ -71,10 +71,113 @@ export type DashboardStatus = {
   configDrift?: ConfigDriftStatus | null;
   readiness: ReadinessItem[];
   suggestedAction?: SuggestedAction | null;
+  syncActivity?: SyncActivitySnapshot | null;
+  configInventory?: ConfigInventoryStats | null;
+  prodMonitoring?: HaMonitoringStats | null;
+  stagingMonitoring?: HaMonitoringStats | null;
+  entityParity?: EntityParitySnapshot | null;
+  stagingRepresentation?: StagingRepresentationStatus | null;
+  mqttBridge?: MqttBridgeStats | null;
   syncLogTail: string[];
   pollHistory: PollHistoryPoint[];
   issues: ComponentIssue[];
+  liveMetrics?: LiveMetricsSnapshot | null;
   refreshedAt: string;
+};
+
+export type LiveMetricsSnapshot = {
+  status: LiveStatusChips;
+  reachability: HaReachabilitySnapshot;
+  bridge?: BridgeUptimeSnapshot | null;
+  automation?: AutomationActivitySnapshot | null;
+};
+
+export type LiveStatusChips = {
+  git?: GitLiveChip | null;
+  mirror?: MirrorLiveChip | null;
+  staging?: StagingLiveChip | null;
+};
+
+export type GitLiveChip = {
+  configured: boolean;
+  branch?: string | null;
+  commitHash?: string | null;
+  isHaDirty: boolean;
+  haChangedFileCount: number;
+  isRepoDirty: boolean;
+  repoChangedFileCount: number;
+  commitsAhead?: number | null;
+  commitsBehind?: number | null;
+};
+
+export type MirrorLiveChip = {
+  configured: boolean;
+  running: boolean;
+  mode: string;
+  bridgeConnected: boolean;
+  prodMqttHost?: string | null;
+  prodMqttPort: number;
+};
+
+export type StagingLiveChip = {
+  apiReachable: boolean;
+  containerRunning: boolean;
+  version?: string | null;
+  installLabel: string;
+  containerName?: string | null;
+};
+
+export type HaReachabilitySnapshot = {
+  available: boolean;
+  prodLatencyMs?: number | null;
+  prodReachable: boolean;
+  stagingLatencyMs?: number | null;
+  stagingReachable: boolean;
+  history: ReachabilityHistoryPoint[];
+};
+
+export type ReachabilityHistoryPoint = {
+  at: string;
+  prodLatencyMs?: number | null;
+  prodReachable: boolean;
+  stagingLatencyMs?: number | null;
+  stagingReachable: boolean;
+};
+
+export type BridgeUptimeSnapshot = {
+  available: boolean;
+  connected: boolean;
+  buckets: BridgeUptimeBucket[];
+  pollHistory: BridgeStatePoint[];
+};
+
+export type BridgeUptimeBucket = {
+  at: string;
+  connected: boolean;
+};
+
+export type BridgeStatePoint = {
+  at: string;
+  connected: boolean;
+};
+
+export type AutomationActivitySnapshot = {
+  available: boolean;
+  prodRunsLastHour: number;
+  stagingRunsLastHour: number;
+  prodBuckets: AutomationActivityBucket[];
+  stagingBuckets: AutomationActivityBucket[];
+};
+
+export type AutomationActivityBucket = {
+  at: string;
+  runs: number;
+};
+
+export type GitFileDiff = {
+  path: string;
+  status: "added" | "modified" | "deleted" | string;
+  diff: string;
 };
 
 export type GitSnapshot = {
@@ -84,6 +187,18 @@ export type GitSnapshot = {
   commitSubject?: string | null;
   commitDate?: string | null;
   isDirty: boolean;
+  changedFileCount: number;
+  isHaDirty: boolean;
+  haChangedFileCount: number;
+  isRepoDirty: boolean;
+  repoChangedFileCount: number;
+  haChangedSample: string[];
+  repoChangedSample: string[];
+  haChangedFiles: string[];
+  repoChangedFiles: string[];
+  commitsAhead?: number | null;
+  commitsBehind?: number | null;
+  remoteUrl?: string | null;
 };
 
 export type PersonSyncSnapshot = {
@@ -140,6 +255,93 @@ export type SuggestedAction = {
   detail: string;
   link: string;
   linkLabel: string;
+  severity?: "critical" | "warning" | "info";
+  actionPreset?: string | null;
+};
+
+export type SyncActivitySnapshot = {
+  lastPersonPollAt?: string | null;
+  lastPersonPollRelative?: string | null;
+  lastPersonPollCount?: number | null;
+  lastApplyAt?: string | null;
+  lastApplyRelative?: string | null;
+  lastApplyCommit?: string | null;
+  lastStorageSyncAt?: string | null;
+  lastStorageSyncRelative?: string | null;
+};
+
+export type ConfigInventoryStats = {
+  available: boolean;
+  automationCount: number;
+  scriptCount: number;
+  packageCount: number;
+  blueprintCount: number;
+};
+
+export type HaMonitoringStats = {
+  available: boolean;
+  automationEntities: number;
+  scriptEntities: number;
+  personEntities: number;
+  mqttEntities: number;
+  sensorEntities: number;
+  totalEntities: number;
+};
+
+export type EntityParitySnapshot = {
+  available: boolean;
+  hasDifferences: boolean;
+  isAligned: boolean;
+  unexpectedProdOnlyCount: number;
+  unexpectedStagingOnlyCount: number;
+  expectedStagingOnlyCount: number;
+  unexpectedProdOnlySample: string[];
+  unexpectedStagingOnlySample: string[];
+  expectedStagingOnlySample: string[];
+  domains: EntityDomainParity[];
+};
+
+export type EntityDomainParity = {
+  domain: string;
+  prodOnlyCount: number;
+  stagingOnlyCount: number;
+  unexpectedProdOnlyCount: number;
+  unexpectedStagingOnlyCount: number;
+  prodOnlySample: string[];
+  stagingOnlySample: string[];
+};
+
+export type StagingRepresentationStatus = {
+  available: boolean;
+  verdict: "aligned" | "review" | "drift";
+  headline: string;
+  summary: string;
+  configMatchesGit: boolean;
+  entityRegistryAligned: boolean;
+  presenceMatches: boolean;
+  gitClean: boolean;
+  issues: RepresentationIssue[];
+};
+
+export type RepresentationIssue = {
+  severity: "info" | "warn" | "error";
+  category: string;
+  title: string;
+  detail: string;
+  samples: string[];
+};
+
+export type MqttBridgeStats = {
+  available: boolean;
+  bridgeConnected: boolean;
+  connectedClients: number;
+  recentEvents: number;
+  activityBuckets: MqttActivityBucket[];
+};
+
+export type MqttActivityBucket = {
+  at: string;
+  events: number;
 };
 
 export type PollHistoryPoint = {
@@ -329,6 +531,31 @@ export const onboardingApi = {
 
 export const dashboardApi = {
   status: () => api<DashboardStatus>("/api/dashboard"),
+  gitDiff: (path: string) => api<GitFileDiff>(`/api/git/diff?path=${encodeURIComponent(path)}`),
+  gitCommit: (body: { scope: "ha" | "repo"; message?: string | null }) =>
+    api<OperationResult>("/api/git/commit", { method: "POST", body: JSON.stringify(body) }),
+  gitPush: (branch?: string | null) =>
+    api<OperationResult>("/api/git/push", {
+      method: "POST",
+      body: JSON.stringify({ branch: branch ?? null }),
+    }),
+};
+
+export type DiagnosticsStatus = {
+  subsystems: DashboardStatus["subsystems"];
+  issues: ComponentIssue[];
+  pollHistory: PollHistoryPoint[];
+  syncActivity?: SyncActivitySnapshot | null;
+  syncLogLines: string[];
+  mqttLogLines: string[];
+  mirrorConfigured: boolean;
+  syncLogPath: string;
+  mqttLogPath?: string | null;
+  refreshedAt: string;
+};
+
+export const diagnosticsApi = {
+  status: () => api<DiagnosticsStatus>("/api/diagnostics"),
 };
 
 export const settingsApi = {
@@ -356,6 +583,8 @@ export const operationsApi = {
     }),
   deployMirror: () => api<OperationResult>("/api/operations/deploy-mirror", { method: "POST" }),
   restartStaging: () => api<OperationResult>("/api/operations/restart-staging", { method: "POST" }),
+  shipToStaging: () => api<OperationResult>("/api/operations/ship-to-staging", { method: "POST" }),
+  deployToProd: () => api<OperationResult>("/api/operations/deploy-to-prod", { method: "POST" }),
 };
 
 export const systemApi = {

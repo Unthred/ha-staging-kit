@@ -19,7 +19,10 @@ export function DashboardGitCard({ git }: { git?: GitSnapshot | null }) {
           <p className="dash-panel-eyebrow">Git snapshot</p>
           <h3>{git.branch ?? "staging"}</h3>
         </div>
-        {git.isDirty && <span className="dash-badge dash-badge-warn">Local changes</span>}
+        <div className="dash-git-badges">
+          {git.isHaDirty && <span className="dash-badge dash-badge-warn">{git.haChangedFileCount} HA YAML</span>}
+          {git.isRepoDirty && <span className="dash-badge dash-badge-info">{git.repoChangedFileCount} docs/repo</span>}
+        </div>
       </header>
       <dl className="dash-kv">
         <div>

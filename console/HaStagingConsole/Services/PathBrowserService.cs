@@ -14,7 +14,7 @@ public sealed class PathBrowserService(KitPaths paths)
             new("Kit data (internal mount)", paths.SidecarData, "Configure the host folder as Kit data directory"),
         };
 
-        AddIfExists(hints, "HA config git repo", FirstNonEmpty(state.Paths.HaConfigRepo, EnvFile.Get(paths.EnvFile, "HA_CONFIG_REPO")), "Mounted read-only at /repo");
+        AddIfExists(hints, "HA config git repo", FirstNonEmpty(state.Paths.HaConfigRepo, EnvFile.Get(paths.EnvFile, "HA_CONFIG_REPO")), "Mounted at /repo (read-write for console commits)");
         AddIfExists(hints, "Staging HA config", FirstNonEmpty(state.Paths.HaStagingConfig, EnvFile.Get(paths.EnvFile, "HA_STAGING_CONFIG")), "Mounted at /ha-config");
         AddIfExists(hints, "Kit data directory", FirstNonEmpty(state.Paths.SidecarData, EnvFile.Get(paths.EnvFile, "SIDECAR_DATA")), "Tokens, SSH key, sync.log");
         AddIfExists(hints, "Mirror data", FirstNonEmpty(state.Paths.MirrorData, EnvFile.Get(paths.EnvFile, "MIRROR_DATA")), "MQTT mirror only");

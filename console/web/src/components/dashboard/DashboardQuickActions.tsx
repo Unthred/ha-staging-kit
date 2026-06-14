@@ -4,37 +4,61 @@ import { operationsApi } from "../../api";
 
 export function DashboardQuickActions({
   gitConfigured,
+  mirrorConfigured,
   onDone,
 }: {
   gitConfigured: boolean;
+  mirrorConfigured: boolean;
   onDone: () => void;
 }) {
   return (
     <section className="dash-panel dash-quick-actions">
       <header className="dash-panel-head">
         <div>
-          <p className="dash-panel-eyebrow">Actions</p>
+          <p className="dash-panel-eyebrow">Operations</p>
           <h3>Run now</h3>
         </div>
+        <Link to="/operations" className="dash-chip-link">
+          All operations
+        </Link>
       </header>
-      <div className="dash-quick-actions-row">
+      <div className="dash-quick-actions-row ops-actions">
         <ActionButton
           label="Apply staging config"
-          onRun={async () => {
-            const r = await operationsApi.applyConfig();
-            if (r.ok) onDone();
-            return r;
-          }}
+          toastPreset="apply-config"
+          onRun={operationsApi.applyConfig}
+          onDone={onDone}
           disabled={!gitConfigured}
         />
         <ActionButton
-          label="Person poll now"
+          label="Person poll"
+          toastPreset="person-poll"
           variant="secondary"
-          onRun={async () => {
-            const r = await operationsApi.personPoll();
-            if (r.ok) onDone();
-            return r;
-          }}
+          onRun={operationsApi.personPoll}
+          onDone={onDone}
+        />
+        <ActionButton
+          label="Storage sync"
+          toastPreset="storage-sync"
+          variant="secondary"
+          onRun={operationsApi.storageSync}
+          onDone={onDone}
+        />
+        {mirrorConfigured && (
+          <ActionButton
+            label="Refresh mirror"
+            toastPreset="refresh-mirror"
+            variant="secondary"
+            onRun={operationsApi.deployMirror}
+            onDone={onDone}
+          />
+        )}
+        <ActionButton
+          label="Restart staging HA"
+          toastPreset="restart-staging"
+          variant="secondary"
+          onRun={operationsApi.restartStaging}
+          onDone={onDone}
         />
       </div>
       {!gitConfigured && (

@@ -14,7 +14,7 @@ services:
     volumes:
       - ./.env:/kit/.env:rw
       - .:/kit
-      - ${HA_CONFIG_REPO}:/repo:ro
+      - ${HA_CONFIG_REPO}:/repo:rw
       - ${HA_STAGING_CONFIG}:/ha-config
       - ${SIDECAR_DATA}:/sidecar-data
       - ${MIRROR_DATA}:${MIRROR_DATA}

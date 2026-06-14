@@ -5,6 +5,7 @@ export type ActionToastPreset = {
   error: string;
   successIcon?: string;
   errorIcon?: string;
+  successTone?: ToastTone;
 };
 
 const presets: Record<string, ActionToastPreset> = {
@@ -26,6 +27,50 @@ const presets: Record<string, ActionToastPreset> = {
     successIcon: "🔄🦇",
     errorIcon: "📡🫠",
   },
+  "apply-config": {
+    success: "Git config applied — staging YAML updated from the repo branch.",
+    error: "Apply config failed — check sync.log and git mount.",
+    successIcon: "🌿",
+    errorIcon: "📂💥",
+  },
+  "person-poll": {
+    success: "Person poll done — prod presence copied to staging.",
+    error: "Person poll failed — check prod/staging tokens and URLs.",
+    successIcon: "👥",
+    errorIcon: "🛰️🫠",
+  },
+  "restart-staging": {
+    success: "Staging HA restarted — give it a minute to come back up.",
+    error: "Restart failed — check STAGING_HA_CONTAINER in Settings.",
+    successIcon: "🔄🏠",
+    errorIcon: "🏚️💥",
+  },
+  "ship-staging": {
+    success: "Shipped to staging — pushed, applied, and restarted.",
+    error: "Ship to staging failed — see details below.",
+    successIcon: "🚀",
+    errorIcon: "📦💥",
+  },
+  "deploy-prod": {
+    success: "Promoted to main — GitHub Actions will update HA Green.",
+    error: "Deploy to prod failed — check git merge/push output.",
+    successIcon: "✅",
+    errorIcon: "🚨",
+  },
+  "mirror-readonly": {
+    success: "Mirror back to read-only — staging cannot actuate prod devices now.",
+    error: "Could not switch mirror to read-only.",
+    successIcon: "🛡️🦇",
+    errorIcon: "⚡🫠",
+    successTone: "ok",
+  },
+  "mirror-control-on": {
+    success: "Control mode ON — real devices can move. Turn off when finished testing.",
+    error: "Could not enable control mode.",
+    successIcon: "⚠️🎮",
+    errorIcon: "🚫",
+    successTone: "warn",
+  },
 };
 
 export function actionToast(
@@ -38,7 +83,11 @@ export function actionToast(
     return { message: fallback, tone: ok ? "ok" : "err", icon: ok ? "👍" : "💥" };
   }
   return ok
-    ? { message: preset.success, tone: "ok", icon: preset.successIcon ?? "🎉" }
+    ? {
+        message: preset.success,
+        tone: preset.successTone ?? "ok",
+        icon: preset.successIcon ?? "🎉",
+      }
     : { message: preset.error, tone: "err", icon: preset.errorIcon ?? "🫠" };
 }
 

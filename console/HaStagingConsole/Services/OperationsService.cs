@@ -2,7 +2,7 @@ using HaStagingConsole.Models;
 
 namespace HaStagingConsole.Services;
 
-public sealed class OperationsService(KitPaths paths, SidecarRunner sidecar, DockerRunner docker)
+public sealed class OperationsService(KitPaths paths, SidecarRunner sidecar, DockerRunner docker, DashboardBuilder dashboard)
 {
     public Task<OperationResult> ApplyConfigAsync(CancellationToken ct)
     {
@@ -20,6 +20,41 @@ public sealed class OperationsService(KitPaths paths, SidecarRunner sidecar, Doc
 
     public Task<OperationResult> StorageSyncAsync(CancellationToken ct) =>
         RunSidecarScript("/sidecar/sbin/sync-storage.sh", "Storage sync", ct);
+
+    public async Task<OperationResult> ShipToStagingAsync(CancellationToken ct)
+    {
+        var logs = new List<string>();
+        var branch = EnvFile.Get(paths.EnvFile, "HA_BRANCH") ?? "staging";
+
+        var push = await dashboard.PushBranchAsync(branch, ct);
+        logs.Add(push.Message);
+        if (!push.Ok)
+            return Fail(logs, push.LogTail);
+
+        if (!string.IsNullOrWhiteSpace(push.LogTail))
+            logs.Add(push.LogTail!);
+
+        var apply = await ApplyConfigAsync(ct);
+        logs.Add(apply.Message);
+        if (!apply.Ok)
+            return Fail(logs, apply.LogTail);
+
+        if (!string.IsNullOrWhiteSpace(apply.LogTail))
+            logs.Add(apply.LogTail!);
+
+        var restart = await RestartStagingHaAsync(ct);
+        logs.Add(restart.Message);
+        if (!restart.Ok)
+            return Fail(logs, restart.LogTail);
+
+        return new OperationResult(
+            true,
+            "Shipped to staging — pushed git, applied config, restarted staging HA",
+            JoinLogs(logs, restart.LogTail));
+    }
+
+    public Task<OperationResult> DeployToProdAsync(CancellationToken ct) =>
+        dashboard.PromoteStagingToMainAsync(ct);
 
     public async Task<OperationResult> SetMirrorModeAsync(bool controlMode, CancellationToken ct)
     {
@@ -52,5 +87,16 @@ public sealed class OperationsService(KitPaths paths, SidecarRunner sidecar, Doc
 
         var (ok, msg) = await sidecar.RunScriptAsync(script, ct);
         return new OperationResult(ok, ok ? $"{label} completed" : $"{label} failed", msg);
+    }
+
+    static OperationResult Fail(IReadOnlyList<string> logs, string? tail) =>
+        new(false, logs[^1], JoinLogs(logs, tail));
+
+    static string JoinLogs(IReadOnlyList<string> logs, string? tail)
+    {
+        var combined = string.Join(Environment.NewLine, logs.Where(l => !string.IsNullOrWhiteSpace(l)));
+        if (string.IsNullOrWhiteSpace(tail))
+            return combined;
+        return string.IsNullOrWhiteSpace(combined) ? tail : combined + Environment.NewLine + tail;
     }
 }

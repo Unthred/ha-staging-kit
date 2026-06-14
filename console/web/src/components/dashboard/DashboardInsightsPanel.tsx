@@ -12,8 +12,8 @@ export function DashboardInsightsPanel({ issues }: { issues: ComponentIssue[] })
           <h3>{sorted.length === 0 ? "All clear" : `${sorted.length} active signal${sorted.length === 1 ? "" : "s"}`}</h3>
         </div>
         {sorted.length > 0 && (
-          <Link to="/operations" className="dash-text-link">
-            Resolve →
+          <Link to="/diagnostics" className="dash-text-link">
+            View logs →
           </Link>
         )}
       </header>

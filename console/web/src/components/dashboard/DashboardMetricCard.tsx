@@ -13,14 +13,16 @@ export function DashboardMetricCard({
   tone,
   detail,
   meta,
+  compact,
 }: {
   name: string;
   tone: HealthTone;
   detail: string;
   meta?: string;
+  compact?: boolean;
 }) {
   return (
-    <article className={`dash-metric dash-metric-${tone}`}>
+    <article className={`dash-metric dash-metric-${tone} ${compact ? "dash-metric-compact" : ""}`}>
       <div className="dash-metric-icon" aria-hidden="true">
         {ICONS[name] ?? "◆"}
       </div>

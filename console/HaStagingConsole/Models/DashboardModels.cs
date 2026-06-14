@@ -14,10 +14,91 @@ public sealed record DashboardStatus(
     ConfigDriftStatus? ConfigDrift,
     IReadOnlyList<ReadinessItem> Readiness,
     SuggestedAction? SuggestedAction,
+    SyncActivitySnapshot? SyncActivity,
+    ConfigInventoryStats? ConfigInventory,
+    HaMonitoringStats? ProdMonitoring,
+    HaMonitoringStats? StagingMonitoring,
+    EntityParitySnapshot? EntityParity,
+    StagingRepresentationStatus? StagingRepresentation,
+    MqttBridgeStats? MqttBridge,
     IReadOnlyList<string> SyncLogTail,
     IReadOnlyList<PollHistoryPoint> PollHistory,
     IReadOnlyList<ComponentIssue> Issues,
+    LiveMetricsSnapshot? LiveMetrics,
     DateTimeOffset RefreshedAt);
+
+public sealed record LiveMetricsSnapshot(
+    LiveStatusChips Status,
+    HaReachabilitySnapshot Reachability,
+    BridgeUptimeSnapshot? Bridge,
+    AutomationActivitySnapshot? Automation);
+
+public sealed record LiveStatusChips(
+    GitLiveChip? Git,
+    MirrorLiveChip? Mirror,
+    StagingLiveChip? Staging);
+
+public sealed record GitLiveChip(
+    bool Configured,
+    string? Branch,
+    string? CommitHash,
+    bool IsHaDirty,
+    int HaChangedFileCount,
+    bool IsRepoDirty,
+    int RepoChangedFileCount,
+    int? CommitsAhead,
+    int? CommitsBehind);
+
+public sealed record MirrorLiveChip(
+    bool Configured,
+    bool Running,
+    string Mode,
+    bool BridgeConnected,
+    string? ProdMqttHost,
+    int ProdMqttPort);
+
+public sealed record StagingLiveChip(
+    bool ApiReachable,
+    bool ContainerRunning,
+    string? Version,
+    string InstallLabel,
+    string? ContainerName);
+
+public sealed record HaReachabilitySnapshot(
+    bool Available,
+    int? ProdLatencyMs,
+    bool ProdReachable,
+    int? StagingLatencyMs,
+    bool StagingReachable,
+    IReadOnlyList<ReachabilityHistoryPoint> History);
+
+public sealed record ReachabilityHistoryPoint(
+    DateTimeOffset At,
+    int? ProdLatencyMs,
+    bool ProdReachable,
+    int? StagingLatencyMs,
+    bool StagingReachable);
+
+public sealed record BridgeUptimeSnapshot(
+    bool Available,
+    bool Connected,
+    IReadOnlyList<BridgeUptimeBucket> Buckets,
+    IReadOnlyList<BridgeStatePoint> PollHistory);
+
+public sealed record BridgeUptimeBucket(DateTimeOffset At, bool Connected);
+
+public sealed record BridgeStatePoint(DateTimeOffset At, bool Connected);
+
+public sealed record AutomationActivitySnapshot(
+    bool Available,
+    int ProdRunsLastHour,
+    int StagingRunsLastHour,
+    IReadOnlyList<AutomationActivityBucket> ProdBuckets,
+    IReadOnlyList<AutomationActivityBucket> StagingBuckets);
+
+public sealed record AutomationActivityBucket(DateTimeOffset At, int Runs);
+
+public sealed record HaProbeResult(bool Available, bool Reachable, int? LatencyMs);
 
 public sealed record SubsystemStatus(string Name, string Status, string Detail);
 
@@ -44,7 +125,25 @@ public sealed record GitSnapshotStatus(
     string? CommitHash,
     string? CommitSubject,
     DateTimeOffset? CommitDate,
-    bool IsDirty);
+    bool IsDirty,
+    int ChangedFileCount,
+    bool IsHaDirty,
+    int HaChangedFileCount,
+    bool IsRepoDirty,
+    int RepoChangedFileCount,
+    IReadOnlyList<string> HaChangedSample,
+    IReadOnlyList<string> RepoChangedSample,
+    IReadOnlyList<string> HaChangedFiles,
+    IReadOnlyList<string> RepoChangedFiles,
+    int? CommitsAhead,
+    int? CommitsBehind,
+    string? RemoteUrl);
+
+public sealed record GitFileDiffResult(string Path, string Status, string Diff);
+
+public sealed record GitCommitRequest(string Scope, string? Message);
+
+public sealed record GitPushRequest(string? Branch);
 
 public sealed record PersonSyncSnapshot(
     int? LastCount,
@@ -65,9 +164,101 @@ public sealed record ConfigDriftStatus(
 
 public sealed record ReadinessItem(string Id, string Label, bool Ok, string? Detail);
 
-public sealed record SuggestedAction(string Title, string Detail, string Link, string LinkLabel);
+public sealed record SuggestedAction(
+    string Title,
+    string Detail,
+    string Link,
+    string LinkLabel,
+    string Severity = "info",
+    string? ActionPreset = null);
+
+public sealed record SyncActivitySnapshot(
+    DateTimeOffset? LastPersonPollAt,
+    string? LastPersonPollRelative,
+    int? LastPersonPollCount,
+    DateTimeOffset? LastApplyAt,
+    string? LastApplyRelative,
+    string? LastApplyCommit,
+    DateTimeOffset? LastStorageSyncAt,
+    string? LastStorageSyncRelative);
+
+public sealed record ConfigInventoryStats(
+    bool Available,
+    int AutomationCount,
+    int ScriptCount,
+    int PackageCount,
+    int BlueprintCount);
+
+public sealed record HaMonitoringStats(
+    bool Available,
+    int AutomationEntities,
+    int ScriptEntities,
+    int PersonEntities,
+    int MqttEntities,
+    int SensorEntities,
+    int TotalEntities);
+
+public sealed record EntityParitySnapshot(
+    bool Available,
+    bool HasDifferences,
+    bool IsAligned,
+    int UnexpectedProdOnlyCount,
+    int UnexpectedStagingOnlyCount,
+    int ExpectedStagingOnlyCount,
+    IReadOnlyList<string> UnexpectedProdOnlySample,
+    IReadOnlyList<string> UnexpectedStagingOnlySample,
+    IReadOnlyList<string> ExpectedStagingOnlySample,
+    IReadOnlyList<EntityDomainParity> Domains);
+
+public sealed record EntityDomainParity(
+    string Domain,
+    int ProdOnlyCount,
+    int StagingOnlyCount,
+    int UnexpectedProdOnlyCount,
+    int UnexpectedStagingOnlyCount,
+    IReadOnlyList<string> ProdOnlySample,
+    IReadOnlyList<string> StagingOnlySample);
+
+public sealed record StagingRepresentationStatus(
+    bool Available,
+    string Verdict,
+    string Headline,
+    string Summary,
+    bool ConfigMatchesGit,
+    bool EntityRegistryAligned,
+    bool PresenceMatches,
+    bool GitClean,
+    IReadOnlyList<RepresentationIssue> Issues);
+
+public sealed record RepresentationIssue(
+    string Severity,
+    string Category,
+    string Title,
+    string Detail,
+    IReadOnlyList<string> Samples);
+
+public sealed record MqttBridgeStats(
+    bool Available,
+    bool BridgeConnected,
+    int ConnectedClients,
+    int RecentEvents,
+    IReadOnlyList<MqttActivityBucket> ActivityBuckets);
+
+public sealed record MqttActivityBucket(DateTimeOffset At, int Events);
 
 public sealed record PollHistoryPoint(DateTimeOffset At, int Count, bool Ok);
+
+public sealed record DiagnosticsStatus(
+    IReadOnlyList<SubsystemStatus> Subsystems,
+    IReadOnlyList<ComponentIssue> Issues,
+    IReadOnlyList<PollHistoryPoint> PollHistory,
+    SyncActivitySnapshot? SyncActivity,
+    IReadOnlyList<string> SyncLogLines,
+    IReadOnlyList<string> MqttLogLines,
+    bool MirrorConfigured,
+    string SyncLogPath,
+    string? MqttLogPath,
+    DateTimeOffset RefreshedAt);
 
 public sealed record StagingTargetSnapshot(
     string? Url,

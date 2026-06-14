@@ -14,6 +14,7 @@ builder.Services.AddSingleton<OnboardingStore>();
 builder.Services.AddSingleton<OnboardingBootstrap>();
 builder.Services.AddSingleton<EnvWriter>();
 builder.Services.AddSingleton<OnboardingTests>();
+builder.Services.AddSingleton<LiveMetricsStore>();
 builder.Services.AddSingleton<DashboardBuilder>();
 builder.Services.AddSingleton<StagingTargetBuilder>();
 builder.Services.AddSingleton<StatusService>();
@@ -41,6 +42,28 @@ app.MapPost("/api/system/restart-container", async (RestartContainerRequest req,
 app.MapGet("/api/dashboard", async (StatusService status, CancellationToken ct) =>
     Results.Ok(await status.GetDashboardAsync(ct)));
 
+app.MapGet("/api/git/diff", async (string? path, DashboardBuilder dashboard, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(path))
+        return Results.BadRequest(new { message = "path is required" });
+
+    var diff = await dashboard.GetGitFileDiffAsync(path, ct);
+    return diff is null
+        ? Results.NotFound(new { message = "File is not changed or path is invalid" })
+        : Results.Ok(diff);
+});
+
+app.MapPost("/api/git/commit", async (GitCommitRequest req, DashboardBuilder dashboard, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(req.Scope))
+        return Results.BadRequest(new { message = "scope is required (ha or repo)" });
+
+    return Results.Ok(await dashboard.CommitChangedFilesAsync(req.Scope, req.Message, ct));
+});
+
+app.MapGet("/api/diagnostics", async (StatusService status, CancellationToken ct) =>
+    Results.Ok(await status.GetDiagnosticsAsync(ct)));
+
 app.MapGet("/api/settings", (SettingsService settings) => Results.Ok(settings.Get()));
 app.MapPost("/api/settings", (SettingsUpdateRequest req, SettingsService settings) =>
     Results.Ok(settings.Save(req)));
@@ -57,6 +80,12 @@ app.MapPost("/api/operations/deploy-mirror", async (OperationsService ops, Cance
     Results.Ok(await ops.DeployMirrorAsync(ct)));
 app.MapPost("/api/operations/restart-staging", async (OperationsService ops, CancellationToken ct) =>
     Results.Ok(await ops.RestartStagingHaAsync(ct)));
+app.MapPost("/api/operations/ship-to-staging", async (OperationsService ops, CancellationToken ct) =>
+    Results.Ok(await ops.ShipToStagingAsync(ct)));
+app.MapPost("/api/operations/deploy-to-prod", async (OperationsService ops, CancellationToken ct) =>
+    Results.Ok(await ops.DeployToProdAsync(ct)));
+app.MapPost("/api/git/push", async (GitPushRequest? req, DashboardBuilder dashboard, CancellationToken ct) =>
+    Results.Ok(await dashboard.PushBranchAsync(req?.Branch, ct)));
 
 app.MapGet("/api/onboarding/status", async (
     OnboardingBootstrap bootstrap,

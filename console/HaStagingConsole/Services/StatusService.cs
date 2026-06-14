@@ -9,7 +9,8 @@ public sealed partial class StatusService(
     OnboardingStore store,
     OnboardingBootstrap bootstrap,
     DashboardBuilder dashboard,
-    StagingTargetBuilder stagingTarget)
+    StagingTargetBuilder stagingTarget,
+    LiveMetricsStore liveMetrics)
 {
     public async Task<DashboardStatus> GetDashboardAsync(CancellationToken ct)
     {
@@ -61,13 +62,60 @@ public sealed partial class StatusService(
 
         var git = await dashboard.GetGitSnapshotAsync(env, ct);
         var personSync = dashboard.ParsePersonSync(syncLogs);
+        var syncActivity = dashboard.ParseSyncActivity(syncLogs, personSync);
         var pollHistory = dashboard.ParsePollHistory(syncLogs);
         var syncLogTail = dashboard.TailSyncLog(syncLogs);
         var drift = dashboard.GetConfigDrift(git);
         var presence = await dashboard.GetPresenceSummaryAsync(ct);
+        var configInventory = dashboard.GetConfigInventory();
+        var prodMonitoring = await dashboard.GetInstanceMonitoringAsync(prodUrl, paths.ProdTokenFile, ct);
+        var stagingMonitoring = await dashboard.GetInstanceMonitoringAsync(stagingUrl, paths.StagingTokenFile, ct);
+        var entityParity = await dashboard.GetEntityParityAsync(ct);
+        var stagingRepresentation = dashboard.BuildStagingRepresentation(git, drift, entityParity, presence);
+        var mirrorData = env.GetValueOrDefault("MIRROR_DATA", "");
+        var mqttBridge = dashboard.GetMqttBridgeStats(mirrorData, mirrorRunning);
         var readiness = dashboard.BuildReadiness(onboarding, syncRunning, git);
         var issues = CollectIssues(subsystems, syncLogs, env);
-        var suggested = dashboard.BuildSuggestedAction(issues, subsystems, drift, mirrorStatus.Configured ? mirrorStatus : null, readiness);
+        var suggested = dashboard.BuildSuggestedAction(
+            issues, subsystems, drift, mirrorStatus.Configured ? mirrorStatus : null, readiness, syncActivity);
+
+        var prodProbe = await dashboard.ProbeHaReachabilityAsync(prodUrl, paths.ProdTokenFile, ct);
+        var stagingProbe = await dashboard.ProbeHaReachabilityAsync(stagingUrl, paths.StagingTokenFile, ct);
+        if (prodProbe.Available || stagingProbe.Available)
+        {
+            liveMetrics.RecordReachability(
+                prodProbe.LatencyMs,
+                prodProbe.Reachable,
+                stagingProbe.LatencyMs,
+                stagingProbe.Reachable);
+        }
+
+        var bridgeConnected = mqttBridge?.BridgeConnected ?? false;
+        if (mirrorStatus.Configured)
+            liveMetrics.RecordBridge(bridgeConnected);
+
+        BridgeUptimeSnapshot? bridgeUptime = null;
+        if (mirrorStatus.Configured)
+        {
+            bridgeUptime = dashboard.GetBridgeUptime(mirrorData, mirrorRunning, bridgeConnected);
+            if (bridgeUptime is not null)
+            {
+                bridgeUptime = bridgeUptime with { PollHistory = liveMetrics.GetBridgeHistory() };
+            }
+        }
+
+        var automationActivity = await dashboard.GetAutomationActivityAsync(prodUrl, stagingUrl, ct);
+        var liveMetricsSnapshot = new LiveMetricsSnapshot(
+            BuildLiveStatusChips(git, mirrorStatus, stagingTargetInfo, mqttBridge),
+            new HaReachabilitySnapshot(
+                prodProbe.Available || stagingProbe.Available,
+                prodProbe.LatencyMs,
+                prodProbe.Reachable,
+                stagingProbe.LatencyMs,
+                stagingProbe.Reachable,
+                liveMetrics.GetReachabilityHistory()),
+            bridgeUptime,
+            automationActivity);
 
         return new DashboardStatus(
             onboarding.IsComplete,
@@ -83,9 +131,132 @@ public sealed partial class StatusService(
             drift,
             readiness,
             suggested,
+            syncActivity,
+            configInventory,
+            prodMonitoring,
+            stagingMonitoring,
+            entityParity,
+            stagingRepresentation,
+            mqttBridge,
             syncLogTail,
             pollHistory,
             issues,
+            liveMetricsSnapshot,
+            DateTimeOffset.Now);
+    }
+
+    static LiveStatusChips BuildLiveStatusChips(
+        GitSnapshotStatus? git,
+        MirrorRuntimeStatus mirrorStatus,
+        StagingTargetSnapshot target,
+        MqttBridgeStats? mqttBridge)
+    {
+        GitLiveChip? gitChip = git is { Configured: true }
+            ? new GitLiveChip(
+                true,
+                git.Branch,
+                git.CommitHash,
+                git.IsHaDirty,
+                git.HaChangedFileCount,
+                git.IsRepoDirty,
+                git.RepoChangedFileCount,
+                git.CommitsAhead,
+                git.CommitsBehind)
+            : null;
+
+        MirrorLiveChip? mirrorChip = mirrorStatus.Configured
+            ? new MirrorLiveChip(
+                true,
+                mirrorStatus.Running,
+                mirrorStatus.Mode,
+                mqttBridge?.BridgeConnected ?? false,
+                mirrorStatus.ProdMqttHost,
+                mirrorStatus.ProdMqttPort)
+            : null;
+
+        StagingLiveChip? stagingChip = string.IsNullOrWhiteSpace(target.Url)
+            ? null
+            : new StagingLiveChip(
+                target.ApiReachable,
+                target.ContainerRunning,
+                target.Version,
+                target.InstallLabel,
+                target.ContainerName);
+
+        return new LiveStatusChips(gitChip, mirrorChip, stagingChip);
+    }
+
+    public async Task<DiagnosticsStatus> GetDiagnosticsAsync(CancellationToken ct)
+    {
+        var env = EnvFile.Read(paths.EnvFile);
+        var state = bootstrap.LoadOrBootstrap();
+        var prodUrl = env.GetValueOrDefault("PROD_HA_URL", state.Prod.Url);
+        var stagingTargetInfo = await stagingTarget.BuildAsync(state, env, ct);
+
+        var syncRunning = await sidecar.IsSyncLoopRunningAsync(ct);
+        var syncLogs = await sidecar.SyncLogTailAsync(500, ct);
+
+        var subsystems = new List<SubsystemStatus>
+        {
+            new(
+                "Config sync",
+                syncRunning ? "pass" : "fail",
+                syncRunning ? "Sync loop running" : $"Sync loop not running — see {paths.SyncLogLocation}"),
+            await dashboard.CheckHaAsync("Production HA", prodUrl, ct),
+            BuildStagingSubsystem(stagingTargetInfo),
+        };
+
+        var mirrorRunning = await sidecar.IsMirrorRunningAsync(ct);
+        var mirrorStatus = GetMirrorRuntime(env) with { Running = mirrorRunning };
+        if (mirrorStatus.Configured)
+        {
+            subsystems.Add(new SubsystemStatus(
+                "MQTT mirror",
+                mirrorRunning ? "pass" : "warn",
+                mirrorRunning ? $"Running — {mirrorStatus.Mode}" : "Configured but mosquitto not running"));
+        }
+        else
+        {
+            subsystems.Add(new SubsystemStatus("MQTT mirror", "skip", "Not configured"));
+        }
+
+        var personSync = dashboard.ParsePersonSync(syncLogs);
+        var syncActivity = dashboard.ParseSyncActivity(syncLogs, personSync);
+        var pollHistory = dashboard.ParsePollHistory(syncLogs);
+        var issues = CollectIssues(subsystems, syncLogs, env);
+
+        var syncLogLines = syncLogs
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .TakeLast(300)
+            .ToList();
+
+        var mirrorData = env.GetValueOrDefault("MIRROR_DATA", "");
+        var mqttLogPath = string.IsNullOrWhiteSpace(mirrorData)
+            ? null
+            : Path.Combine(mirrorData, "log", "mosquitto.log");
+        var mqttLogLines = new List<string>();
+        if (!string.IsNullOrWhiteSpace(mqttLogPath) && File.Exists(mqttLogPath))
+        {
+            try
+            {
+                mqttLogLines = File.ReadAllLines(mqttLogPath).TakeLast(200).ToList();
+            }
+            catch
+            {
+                /* best effort */
+            }
+        }
+
+        return new DiagnosticsStatus(
+            subsystems,
+            issues,
+            pollHistory,
+            syncActivity,
+            syncLogLines,
+            mqttLogLines,
+            mirrorStatus.Configured,
+            paths.SyncLogLocation,
+            mqttLogPath,
             DateTimeOffset.Now);
     }
 
