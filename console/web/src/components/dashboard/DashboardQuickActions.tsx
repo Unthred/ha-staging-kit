@@ -24,16 +24,8 @@ export function DashboardQuickActions({
       </header>
       <div className="dash-quick-actions-row ops-actions">
         <ActionButton
-          label="Apply staging config"
-          toastPreset="apply-config"
-          onRun={operationsApi.applyConfig}
-          onDone={onDone}
-          disabled={!gitConfigured}
-        />
-        <ActionButton
           label="Person poll"
           toastPreset="person-poll"
-          variant="secondary"
           onRun={operationsApi.personPoll}
           onDone={onDone}
         />

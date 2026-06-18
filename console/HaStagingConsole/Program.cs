@@ -2,21 +2,38 @@ using HaStagingConsole.Models;
 using HaStagingConsole.Services;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Host.ConfigureHostOptions(o => o.ShutdownTimeout = TimeSpan.FromSeconds(12));
 builder.Services.ConfigureHttpJsonOptions(o =>
 {
     o.SerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;
     o.SerializerOptions.PropertyNameCaseInsensitive = true;
 });
+builder.Services.AddSingleton<StartupGuard>();
+builder.Services.AddSingleton<GitSshConfigurator>();
 builder.Services.AddSingleton<KitPaths>();
 builder.Services.AddSingleton<DockerRunner>();
 builder.Services.AddSingleton<SidecarRunner>();
+builder.Services.AddSingleton<StagingUiCapture>();
 builder.Services.AddSingleton<OnboardingStore>();
 builder.Services.AddSingleton<OnboardingBootstrap>();
 builder.Services.AddSingleton<EnvWriter>();
 builder.Services.AddSingleton<OnboardingTests>();
 builder.Services.AddSingleton<LiveMetricsStore>();
 builder.Services.AddSingleton<DashboardBuilder>();
+builder.Services.AddSingleton<LovelaceParityDeferStore>();
+builder.Services.AddSingleton<EntityDeployScanStore>();
+builder.Services.AddSingleton<ProdRegistryReader>();
+builder.Services.AddSingleton<ProdZigbee2MqttReader>();
+builder.Services.AddSingleton<Zigbee2MqttConfigFixService>();
+builder.Services.AddSingleton<ProdDeletedRegistryPurgeService>();
+builder.Services.AddSingleton<ProdEntitySuffixFixService>();
+builder.Services.AddSingleton<LovelaceParityUndoStore>();
+builder.Services.AddSingleton<LovelaceParityFixActionStore>();
+builder.Services.AddSingleton<ProdStorageDeployService>();
+builder.Services.AddSingleton<LovelaceParityFixService>();
+builder.Services.AddSingleton<WorkbenchResetService>();
 builder.Services.AddSingleton<StagingTargetBuilder>();
+builder.Services.AddSingleton<HaInstanceDiagnostics>();
 builder.Services.AddSingleton<StatusService>();
 builder.Services.AddSingleton<SettingsService>();
 builder.Services.AddSingleton<OperationsService>();
@@ -24,6 +41,7 @@ builder.Services.AddSingleton<SystemService>();
 builder.Services.AddSingleton<PathBrowserService>();
 builder.Services.AddSingleton<SetupDetector>();
 builder.Services.AddSingleton<MirrorEndpointResolver>();
+builder.Services.AddSingleton<OperationLogService>();
 builder.Services.AddHttpClient();
 
 var app = builder.Build();
@@ -33,14 +51,51 @@ app.UseStaticFiles();
 
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok", service = "ha-staging-kit" }));
 
-app.MapGet("/api/system/containers", async (SystemService system, CancellationToken ct) =>
-    Results.Ok(await system.GetContainersAsync(ct)));
+app.MapGet("/api/system/containers", async (SystemService system, ILogger<Program> log, CancellationToken ct) =>
+{
+    var endpointCt = RequestDeadline.WithTimeout(ct, RequestDeadline.SystemContainers, out var linked);
+    try
+    {
+        return Results.Ok(await system.GetContainersAsync(endpointCt));
+    }
+    catch (OperationCanceledException) when (RequestDeadline.IsTimeout(ct, endpointCt))
+    {
+        log.LogWarning("GET /api/system/containers timed out after {Seconds}s", RequestDeadline.SystemContainers.TotalSeconds);
+        return Results.Json(
+            new { message = "Container status timed out — Docker may be slow; retry shortly." },
+            statusCode: 503);
+    }
+    finally
+    {
+        linked?.Dispose();
+    }
+});
 
 app.MapPost("/api/system/restart-container", async (RestartContainerRequest req, SystemService system, CancellationToken ct) =>
     Results.Ok(await system.RestartContainerAsync(req.Role, ct)));
 
-app.MapGet("/api/dashboard", async (StatusService status, CancellationToken ct) =>
-    Results.Ok(await status.GetDashboardAsync(ct)));
+app.MapGet("/api/dashboard", async (StatusService status, ILogger<Program> log, CancellationToken ct) =>
+{
+    var endpointCt = RequestDeadline.WithTimeout(ct, RequestDeadline.Dashboard, out var linked);
+    try
+    {
+        return Results.Ok(await status.GetDashboardAsync(endpointCt));
+    }
+    catch (OperationCanceledException) when (RequestDeadline.IsTimeout(ct, endpointCt))
+    {
+        log.LogWarning("GET /api/dashboard timed out after {Seconds}s", RequestDeadline.Dashboard.TotalSeconds);
+        return Results.Json(
+            new { message = "Dashboard timed out — the kit may still be starting. Retry in a few seconds." },
+            statusCode: 503);
+    }
+    finally
+    {
+        linked?.Dispose();
+    }
+});
+
+app.MapGet("/api/git/changed-files", async (DashboardBuilder dashboard, CancellationToken ct) =>
+    Results.Ok(await dashboard.GetGitChangedFilesAsync(ct)));
 
 app.MapGet("/api/git/diff", async (string? path, DashboardBuilder dashboard, CancellationToken ct) =>
 {
@@ -53,6 +108,28 @@ app.MapGet("/api/git/diff", async (string? path, DashboardBuilder dashboard, Can
         : Results.Ok(diff);
 });
 
+app.MapGet("/api/git/staging-diff", async (string? path, DashboardBuilder dashboard, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(path))
+        return Results.BadRequest(new { message = "path is required" });
+
+    var diff = await dashboard.GetStagingVsMainFileDiffAsync(path, ct);
+    return diff is null
+        ? Results.NotFound(new { message = "File not found or git not configured" })
+        : Results.Ok(diff);
+});
+
+app.MapGet("/api/git/main-prod-diff", async (string? path, DashboardBuilder dashboard, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(path))
+        return Results.BadRequest(new { message = "path is required" });
+
+    var diff = await dashboard.GetMainProdPendingFileDiffAsync(path, ct);
+    return diff is null
+        ? Results.NotFound(new { message = "File not found, git not configured, or prod deploy not tracked yet" })
+        : Results.Ok(diff);
+});
+
 app.MapPost("/api/git/commit", async (GitCommitRequest req, DashboardBuilder dashboard, CancellationToken ct) =>
 {
     if (string.IsNullOrWhiteSpace(req.Scope))
@@ -61,29 +138,108 @@ app.MapPost("/api/git/commit", async (GitCommitRequest req, DashboardBuilder das
     return Results.Ok(await dashboard.CommitChangedFilesAsync(req.Scope, req.Message, ct));
 });
 
-app.MapGet("/api/diagnostics", async (StatusService status, CancellationToken ct) =>
-    Results.Ok(await status.GetDiagnosticsAsync(ct)));
+app.MapGet("/api/diagnostics", async (StatusService status, OperationLogService opLog, ILogger<Program> log, CancellationToken ct) =>
+{
+    try
+    {
+        return Results.Ok(await status.GetDiagnosticsAsync(ct, opLog.GetRecent()));
+    }
+    catch (OperationCanceledException)
+    {
+        log.LogWarning("GET /api/diagnostics timed out after {Seconds}s", RequestDeadline.Diagnostics.TotalSeconds);
+        return Results.Json(
+            new { message = "Diagnostics timed out — partial Docker or HA slowness; retry shortly." },
+            statusCode: 503);
+    }
+});
 
 app.MapGet("/api/settings", (SettingsService settings) => Results.Ok(settings.Get()));
 app.MapPost("/api/settings", (SettingsUpdateRequest req, SettingsService settings) =>
     Results.Ok(settings.Save(req)));
+app.MapPost("/api/settings/appearance", (AppearanceSettings req, SettingsService settings) =>
+    Results.Ok(settings.SaveAppearance(req)));
 
-app.MapPost("/api/operations/apply-config", async (OperationsService ops, CancellationToken ct) =>
-    Results.Ok(await ops.ApplyConfigAsync(ct)));
-app.MapPost("/api/operations/person-poll", async (OperationsService ops, CancellationToken ct) =>
-    Results.Ok(await ops.PersonPollAsync(ct)));
-app.MapPost("/api/operations/storage-sync", async (OperationsService ops, CancellationToken ct) =>
-    Results.Ok(await ops.StorageSyncAsync(ct)));
-app.MapPost("/api/operations/mirror-mode", async (MirrorModeRequest req, OperationsService ops, CancellationToken ct) =>
-    Results.Ok(await ops.SetMirrorModeAsync(req.ControlMode, ct)));
-app.MapPost("/api/operations/deploy-mirror", async (OperationsService ops, CancellationToken ct) =>
-    Results.Ok(await ops.DeployMirrorAsync(ct)));
-app.MapPost("/api/operations/restart-staging", async (OperationsService ops, CancellationToken ct) =>
-    Results.Ok(await ops.RestartStagingHaAsync(ct)));
-app.MapPost("/api/operations/ship-to-staging", async (OperationsService ops, CancellationToken ct) =>
-    Results.Ok(await ops.ShipToStagingAsync(ct)));
-app.MapPost("/api/operations/deploy-to-prod", async (OperationsService ops, CancellationToken ct) =>
-    Results.Ok(await ops.DeployToProdAsync(ct)));
+app.MapPost("/api/operations/apply-config", async (OperationsService ops, OperationLogService opLog, CancellationToken ct) =>
+{ var r = await ops.ApplyConfigAsync(ct); opLog.Record("Apply config", r); return Results.Ok(r); });
+app.MapPost("/api/operations/person-poll", async (OperationsService ops, OperationLogService opLog, CancellationToken ct) =>
+{ var r = await ops.PersonPollAsync(ct); opLog.Record("Person poll", r); return Results.Ok(r); });
+app.MapPost("/api/operations/storage-sync", async (OperationsService ops, OperationLogService opLog, CancellationToken ct) =>
+{ var r = await ops.StorageSyncAsync(ct); opLog.Record("Storage sync", r); return Results.Ok(r); });
+app.MapPost("/api/operations/reset-workbench", async (OperationsService ops, OperationLogService opLog, CancellationToken ct) =>
+{ var r = await ops.ResetWorkbenchAsync(ct); opLog.Record("Reset workbench", r); return Results.Ok(r); });
+app.MapPost("/api/operations/mirror-mode", async (MirrorModeRequest req, OperationsService ops, OperationLogService opLog, CancellationToken ct) =>
+{ var r = await ops.SetMirrorModeAsync(req.ControlMode, ct); opLog.Record("Mirror mode", r); return Results.Ok(r); });
+app.MapPost("/api/operations/deploy-mirror", async (OperationsService ops, OperationLogService opLog, CancellationToken ct) =>
+{ var r = await ops.DeployMirrorAsync(ct); opLog.Record("Deploy mirror", r); return Results.Ok(r); });
+app.MapPost("/api/operations/restart-staging", async (OperationsService ops, OperationLogService opLog, CancellationToken ct) =>
+{ var r = await ops.RestartStagingHaAsync(ct); opLog.Record("Restart staging HA", r); return Results.Ok(r); });
+app.MapPost("/api/operations/ship-to-staging", async (OperationsService ops, OperationLogService opLog, CancellationToken ct) =>
+{ var r = await ops.ShipToStagingAsync(ct); opLog.Record("Ship to staging", r); return Results.Ok(r); });
+app.MapPost("/api/operations/push-to-github", async (OperationsService ops, OperationLogService opLog, CancellationToken ct) =>
+{ var r = await ops.PushToGitHubAsync(ct); opLog.Record("Push to GitHub", r); return Results.Ok(r); });
+app.MapPost("/api/operations/snapshot-from-staging", async (OperationsService ops, OperationLogService opLog, CancellationToken ct) =>
+{ var r = await ops.SnapshotFromStagingAsync(ct); opLog.Record("Snapshot from staging HA", r); return Results.Ok(r); });
+app.MapPost("/api/operations/deploy-to-prod", async (OperationsService ops, OperationLogService opLog, CancellationToken ct) =>
+{ var r = await ops.DeployToProdAsync(ct); opLog.Record("Deploy to prod", r); return Results.Ok(r); });
+app.MapGet("/api/operations/prod-storage-preflight", async (OperationsService ops, CancellationToken ct) =>
+    Results.Ok(await ops.PreflightProdStorageDeployAsync(ct)));
+app.MapGet("/api/operations/prod-storage-preflight/progress", () =>
+{
+    var snapshot = PreflightProgressStore.Get();
+    return Results.Ok(snapshot ?? new PreflightProgressSnapshot(false, 0, 0, "", DateTimeOffset.UtcNow));
+});
+app.MapPost("/api/operations/lovelace-parity-fix", async (
+    LovelaceParityFixRequest req,
+    OperationsService ops,
+    OperationLogService opLog,
+    CancellationToken ct) =>
+{
+    var r = await ops.ApplyLovelaceParityFixAsync(req, ct);
+    opLog.Record($"Lovelace parity fix ({req.Action} {req.EntityId})", new OperationResult(r.Ok, r.Message, null));
+    return Results.Ok(r);
+});
+app.MapPost("/api/operations/purge-prod-deleted-entities", async (
+    PurgeProdDeletedEntitiesRequest req,
+    OperationsService ops,
+    OperationLogService opLog,
+    CancellationToken ct) =>
+{
+    var r = await ops.PurgeProdDeletedEntitiesAsync(req.EntityId, req.SimilarProdEntityId, ct);
+    opLog.Record($"Purge prod deleted entities ({req.EntityId})", r);
+    return Results.Ok(r);
+});
+app.MapPost("/api/operations/fix-prod-entity-suffix", async (
+    FixProdEntitySuffixRequest req,
+    OperationsService ops,
+    OperationLogService opLog,
+    CancellationToken ct) =>
+{
+    var r = await ops.FixProdEntitySuffixAsync(req.ExpectedEntityId, req.SuffixProdEntityId, ct);
+    opLog.Record($"Fix prod entity suffix ({req.ExpectedEntityId} ← {req.SuffixProdEntityId})", r);
+    return Results.Ok(r);
+});
+app.MapPost("/api/operations/fix-prod-entity-id", async (
+    FixProdEntityIdRequest req,
+    OperationsService ops,
+    OperationLogService opLog,
+    CancellationToken ct) =>
+{
+    var r = await ops.FixProdEntityIdAsync(req.ExpectedEntityId, req.WrongProdEntityId, ct);
+    opLog.Record($"Fix prod entity id ({req.WrongProdEntityId} → {req.ExpectedEntityId})", r);
+    return Results.Ok(r);
+});
+app.MapPost("/api/operations/fix-z2m-config", async (
+    Z2mConfigFixRequest req,
+    OperationsService ops,
+    OperationLogService opLog,
+    CancellationToken ct) =>
+{
+    var r = await ops.ApplyZ2mConfigFixAsync(req, ct);
+    opLog.Record($"Fix Z2M config ({req.LiveIeee})", new OperationResult(r.Ok, r.Message, null));
+    return Results.Ok(r);
+});
+app.MapPost("/api/operations/rollback-prod", async (OperationsService ops, OperationLogService opLog, CancellationToken ct) =>
+{ var r = await ops.RollbackProdDeployAsync(ct); opLog.Record("Rollback prod deploy", r); return Results.Ok(r); });
 app.MapPost("/api/git/push", async (GitPushRequest? req, DashboardBuilder dashboard, CancellationToken ct) =>
     Results.Ok(await dashboard.PushBranchAsync(req?.Branch, ct)));
 
@@ -93,32 +249,85 @@ app.MapGet("/api/onboarding/status", async (
     SetupDetector detector,
     EnvWriter envWriter,
     SidecarRunner sidecar,
+    ILogger<Program> log,
     CancellationToken ct) =>
 {
-    var state = bootstrap.LoadOrBootstrap();
-    var (detected, changed) = await detector.DetectAndMergeAsync(state, ct);
-    if (changed)
+    var endpointCt = RequestDeadline.WithTimeout(ct, RequestDeadline.OnboardingStatus, out var linked);
+    try
     {
-        detector.PersistMergedEnv(state, detected, envWriter);
-        store.Save(state);
-    }
+        var state = bootstrap.LoadOrBootstrap();
+        var (detected, changed) = await detector.DetectAndMergeAsync(state, endpointCt);
+        if (changed)
+        {
+            detector.PersistMergedEnv(state, detected, envWriter);
+            store.Save(state);
+        }
 
-    var mirrorRunning = await sidecar.IsMirrorRunningAsync(ct);
-    return Results.Ok(store.ToStatus(state, mirrorRunning, detected));
+        var mirrorRunning = await sidecar.IsMirrorRunningAsync(endpointCt);
+        return Results.Ok(store.ToStatus(state, mirrorRunning, detected));
+    }
+    catch (OperationCanceledException) when (RequestDeadline.IsTimeout(ct, endpointCt))
+    {
+        log.LogWarning("GET /api/onboarding/status timed out after {Seconds}s", RequestDeadline.OnboardingStatus.TotalSeconds);
+        return Results.Json(
+            new { message = "Onboarding status timed out — cached detection will be used on retry." },
+            statusCode: 503);
+    }
+    finally
+    {
+        linked?.Dispose();
+    }
 });
 
-app.MapPost("/api/onboarding/topology", (TopologyRequest req, OnboardingBootstrap bootstrap, OnboardingStore store, EnvWriter env, MirrorEndpointResolver mirrorEndpoints) =>
+app.MapPost("/api/onboarding/rescan", async (
+    OnboardingBootstrap bootstrap,
+    OnboardingStore store,
+    SetupDetector detector,
+    EnvWriter envWriter,
+    SidecarRunner sidecar,
+    ILogger<Program> log,
+    CancellationToken ct) =>
+{
+    var endpointCt = RequestDeadline.WithTimeout(ct, TimeSpan.FromSeconds(45), out var linked);
+    try
+    {
+        detector.InvalidateCache();
+        var state = bootstrap.LoadOrBootstrap();
+        var (detected, changed) = await detector.DetectAndMergeAsync(state, endpointCt, forceRefresh: true);
+        if (changed)
+        {
+            detector.PersistMergedEnv(state, detected, envWriter);
+            store.Save(state);
+        }
+
+        var mirrorRunning = await sidecar.IsMirrorRunningAsync(endpointCt);
+        log.LogInformation("Onboarding rescan completed (stateChanged={Changed})", changed);
+        return Results.Ok(store.ToStatus(state, mirrorRunning, detected));
+    }
+    catch (OperationCanceledException) when (RequestDeadline.IsTimeout(ct, endpointCt))
+    {
+        log.LogWarning("POST /api/onboarding/rescan timed out");
+        return Results.Json(new { message = "Setup rescan timed out — Docker or network may be slow." }, statusCode: 503);
+    }
+    finally
+    {
+        linked?.Dispose();
+    }
+});
+
+app.MapPost("/api/onboarding/topology", (TopologyRequest req, OnboardingBootstrap bootstrap, OnboardingStore store, EnvWriter env, MirrorEndpointResolver mirrorEndpoints, SetupDetector detector) =>
 {
     var state = bootstrap.LoadOrBootstrap();
     state.Topology = new TopologySettings(req.ProdHaType, req.StagingHaType, req.SameHostAsKit);
     mirrorEndpoints.ApplyIfEnabled(state);
     env.WriteSidecarConfig(state);
     env.WriteKitEnv(state);
+    detector.InvalidateCache();
     store.MarkStep(state, "topology", 2);
     return Results.Ok(store.ToStatus(state));
 });
 
-app.MapPost("/api/onboarding/paths", (PathsRequest req, OnboardingBootstrap bootstrap, OnboardingStore store, EnvWriter env, MirrorEndpointResolver mirrorEndpoints) =>
+app.MapPost("/api/onboarding/paths", (PathsRequest req, OnboardingBootstrap bootstrap, OnboardingStore store, EnvWriter env, MirrorEndpointResolver mirrorEndpoints, SetupDetector detector) =>
 {
     var state = bootstrap.LoadOrBootstrap();
     state.Paths = new PathSettings(
@@ -130,6 +339,7 @@ app.MapPost("/api/onboarding/paths", (PathsRequest req, OnboardingBootstrap boot
     mirrorEndpoints.ApplyIfEnabled(state);
     env.WriteKitEnv(state);
     env.WriteSidecarConfig(state);
+    detector.InvalidateCache();
     store.MarkStep(state, "paths", 3);
     return Results.Ok(store.ToStatus(state));
 });
@@ -150,7 +360,7 @@ app.MapPost("/api/onboarding/prod", (ProdSecretsRequest req, OnboardingBootstrap
     return Results.Ok(store.ToStatus(state));
 });
 
-app.MapPost("/api/onboarding/staging", (StagingSecretsRequest req, OnboardingBootstrap bootstrap, OnboardingStore store, EnvWriter env, KitPaths paths, MirrorEndpointResolver mirrorEndpoints) =>
+app.MapPost("/api/onboarding/staging", (StagingSecretsRequest req, OnboardingBootstrap bootstrap, OnboardingStore store, EnvWriter env, KitPaths paths, MirrorEndpointResolver mirrorEndpoints, SetupDetector detector) =>
 {
     var state = bootstrap.LoadOrBootstrap();
     state.Staging = state.Staging with { Url = req.Url.Trim() };
@@ -161,6 +371,7 @@ app.MapPost("/api/onboarding/staging", (StagingSecretsRequest req, OnboardingBoo
     mirrorEndpoints.ApplyIfEnabled(state);
     env.WriteKitEnv(state);
     env.WriteSidecarConfig(state);
+    detector.InvalidateCache();
     store.MarkStep(state, "staging", 5);
     return Results.Ok(store.ToStatus(state));
 });
@@ -223,13 +434,16 @@ app.MapPost("/api/onboarding/test/git-repo", async (GitRepoTestRequest? req, Onb
 app.MapPost("/api/onboarding/test/staging-path", async (StagingPathTestRequest? req, OnboardingBootstrap bootstrap, OnboardingTests tests, SidecarRunner sidecar, CancellationToken ct) =>
     Results.Ok(await tests.TestStagingConfigPathAsync(req?.HaStagingConfig, bootstrap.LoadOrBootstrap(), sidecar, ct)));
 
-app.MapPost("/api/onboarding/deploy", async (OnboardingBootstrap bootstrap, OnboardingStore store, KitPaths paths, DockerRunner docker, CancellationToken ct) =>
+app.MapPost("/api/onboarding/deploy", async (OnboardingBootstrap bootstrap, OnboardingStore store, KitPaths paths, DockerRunner docker, SetupDetector detector, CancellationToken ct) =>
 {
     var state = bootstrap.LoadOrBootstrap();
     var withMirror = state.Mirror.Enabled ? "--with-mirror" : "";
     var result = await docker.RunScriptAsync(paths.DeployScript, withMirror, ct);
     if (result.Ok)
+    {
         store.MarkStep(state, "deploy", state.Mirror.Enabled ? 7 : 8);
+        detector.InvalidateCache();
+    }
     return Results.Ok(new DeployResult(result.Ok, result.Ok ? "Kit deployed (single container)" : "Deploy failed", result.Message));
 });
 

@@ -38,10 +38,17 @@ prod Mosquitto ──bridge──► mosquitto-mirror ──► staging HA MQTT 
 
 UI "Deploy to prod"
   ──git merge staging→main + push──► GitHub
-  ──kit SSH──► prod HA: git pull + HA reload
+  ──entity deploy scan──► block until git Lovelace refs match live prod
+  ──kit SSH──► prod HA: git pull + Lovelace/helper .storage bundle + HA reload
+
+See [design-entity-deploy-scan.md](design-entity-deploy-scan.md) — deploy never renames prod entities; user fixes integration/HA manually, then Recheck.
 
 prod HA ──backup──► git main
 ```
+
+## Parity rules
+
+Staging and prod should match on YAML, registries, and Lovelace — with **documented exceptions** (auth/tokens, MQTT broker patch, LAN disable, presence poller). See [staging-prod-parity-rules.md](staging-prod-parity-rules.md).
 
 ## Topology
 

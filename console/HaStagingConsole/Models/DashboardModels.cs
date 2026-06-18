@@ -24,6 +24,7 @@ public sealed record DashboardStatus(
     IReadOnlyList<string> SyncLogTail,
     IReadOnlyList<PollHistoryPoint> PollHistory,
     IReadOnlyList<ComponentIssue> Issues,
+    IReadOnlyList<ComponentIssue> HaIssues,
     LiveMetricsSnapshot? LiveMetrics,
     DateTimeOffset RefreshedAt);
 
@@ -102,7 +103,26 @@ public sealed record HaProbeResult(bool Available, bool Reachable, int? LatencyM
 
 public sealed record SubsystemStatus(string Name, string Status, string Detail);
 
-public sealed record ComponentIssue(string Source, string Level, string Message);
+public sealed record ComponentIssue(
+    string Source,
+    string Level,
+    string Message,
+    string? Domain = null,
+    string? EntryId = null,
+    string? Reason = null);
+
+public sealed record HaLogSnapshot(
+    string InstanceLabel,
+    string Source,
+    IReadOnlyList<string> Lines)
+{
+    public static HaLogSnapshot Empty(string instanceLabel) =>
+        new(instanceLabel, "Log unavailable", []);
+}
+
+public sealed record HaInstanceDiagnosticsSnapshot(
+    IReadOnlyList<ComponentIssue> Issues,
+    string? Url);
 
 public sealed record SidecarRuntimeStatus(
     bool Running,
@@ -141,9 +161,21 @@ public sealed record GitSnapshotStatus(
     int? StagingAheadOfMain,
     int StagingHaChanges,
     int? MainAheadOfProdHa,
-    int MainHaChangesForProdHa);
+    int MainHaChangesForProdHa,
+    int MainStorageChangesForProdHa,
+    IReadOnlyList<string> StagingHaFileList,
+    IReadOnlyList<string> StagingRepoFileList,
+    IReadOnlyList<string> MainHaFileList,
+    IReadOnlyList<string> MainStorageFileList,
+    bool ProdDeployTracked = false,
+    string? ProdLastDeploySha = null,
+    string? ProdPreviousDeploySha = null);
 
 public sealed record GitFileDiffResult(string Path, string Status, string Diff);
+
+public sealed record GitChangedFilesResult(
+    IReadOnlyList<string> HaChangedFiles,
+    IReadOnlyList<string> RepoChangedFiles);
 
 public sealed record GitCommitRequest(string Scope, string? Message);
 
@@ -164,7 +196,9 @@ public sealed record ConfigDriftStatus(
     bool HasDrift,
     string? RepoCommit,
     string? LastAppliedCommit,
-    string Detail);
+    string Detail,
+    bool ApplyGapHasHaChanges = false,
+    int ApplyGapHaFileCount = 0);
 
 public sealed record ReadinessItem(string Id, string Label, bool Ok, string? Detail);
 
@@ -252,17 +286,144 @@ public sealed record MqttActivityBucket(DateTimeOffset At, int Events);
 
 public sealed record PollHistoryPoint(DateTimeOffset At, int Count, bool Ok);
 
+public sealed record LovelaceEntityReference(
+    string Source,
+    string? Dashboard,
+    string View,
+    string? CardType,
+    string? CardTitle);
+
+public sealed record LovelaceFixOption(
+    string Id,
+    string Label,
+    string Action,
+    string? ReplacementEntityId,
+    string? Description);
+
+public sealed record LovelaceEntityChoice(
+    string EntityId,
+    string Source,
+    string Label,
+    string Hint,
+    bool CanApplyInRepo);
+
+public sealed record ProdRegistryTombstoneDetail(
+    string EntityId,
+    string? UniqueId,
+    string? Platform,
+    string? CreatedAt,
+    string? Label);
+
+public sealed record ProdEntityContext(
+    string? SimilarProdEntityId,
+    string? Platform,
+    string? DeviceName,
+    string? UniqueId,
+    string? IntegrationHint,
+    bool ExpectedEntityDeletedOnProd,
+    IReadOnlyList<string> DeletedRegistryEntityIds,
+    IReadOnlyList<ProdRegistryTombstoneDetail> DeletedRegistryTombstones,
+    string? LiveDeviceUniquePrefix,
+    string? TombstoneDeviceUniquePrefix,
+    bool TombstoneMatchesLiveDevice,
+    string? EntityIdOccupiedBy = null,
+    string? EntityIdOccupiedByPlatform = null,
+    string? EntityIdOccupiedByDisabledBy = null,
+    IReadOnlyList<string>? ProdFixSteps = null,
+    string? ProdFixAction = null);
+
+public sealed record Z2mStaleConfigEntry(
+    string Ieee,
+    string FriendlyName,
+    bool InStateJson);
+
+public sealed record Z2mStaleConfigIssue(
+    string ExpectedFriendlyName,
+    string LiveIeee,
+    string LiveFriendlyName,
+    IReadOnlyList<Z2mStaleConfigEntry> StaleEntries,
+    string Summary,
+    IReadOnlyList<LovelaceFixOption> FixOptions,
+    bool BlocksDeploy = true);
+
+public sealed record Z2mConfigFixRequest(
+    string LiveIeee,
+    string ExpectedFriendlyName,
+    IReadOnlyList<string>? StaleIpees);
+
+public sealed record LovelaceMissingEntityIssue(
+    string EntityId,
+    bool OnStaging,
+    string SuggestionKind,
+    string IssueClass,
+    string Suggestion,
+    string ManualFixSummary,
+    string? SuggestedProdEntity,
+    ProdEntityContext? ProdContext,
+    IReadOnlyList<LovelaceEntityReference> References,
+    IReadOnlyList<LovelaceFixOption> FixOptions,
+    IReadOnlyList<LovelaceEntityChoice>? EntityChoices,
+    string? AwaitingPublishAction = null);
+
+public sealed record EntityDeployRecheckDelta(
+    IReadOnlyList<string> ResolvedEntityIds,
+    IReadOnlyList<string> NewEntityIds,
+    DateTimeOffset? PreviousScanAt);
+
+public sealed record ProdStoragePreflightResult(
+    bool Ok,
+    int EntityRefCount,
+    int BlockerCount,
+    int DeferredCount,
+    IReadOnlyList<string> MissingEntities,
+    IReadOnlyList<LovelaceMissingEntityIssue> MissingEntityIssues,
+    IReadOnlyList<LovelaceMissingEntityIssue> DeferredEntityIssues,
+    IReadOnlyList<string> MissingCustomCards,
+    IReadOnlyList<string> Issues,
+    bool PendingCommit,
+    int DeployIssueCount,
+    int FixedLocallyCount,
+    EntityDeployRecheckDelta? Recheck,
+    bool CanUndoLovelaceFix,
+    string? LovelaceUndoDescription,
+    IReadOnlyList<Z2mStaleConfigIssue> Z2mConfigIssues,
+    IReadOnlyList<LovelaceMissingEntityIssue> DeployMissingEntityIssues,
+    bool AllowProdRegistryPurge);
+
+public sealed record LovelaceParityFixRequest(
+    string EntityId,
+    string Action,
+    string? ReplacementEntityId);
+
+public sealed record PurgeProdDeletedEntitiesRequest(string EntityId, string? SimilarProdEntityId);
+
+public sealed record FixProdEntitySuffixRequest(string ExpectedEntityId, string SuffixProdEntityId);
+
+public sealed record FixProdEntityIdRequest(string ExpectedEntityId, string WrongProdEntityId);
+
+public sealed record LovelaceParityFixResult(
+    bool Ok,
+    string Message,
+    IReadOnlyList<string> FilesChanged,
+    int ChangeCount);
+
 public sealed record DiagnosticsStatus(
     IReadOnlyList<SubsystemStatus> Subsystems,
     IReadOnlyList<ComponentIssue> Issues,
+    IReadOnlyList<ComponentIssue> HaIssues,
     IReadOnlyList<PollHistoryPoint> PollHistory,
     SyncActivitySnapshot? SyncActivity,
     IReadOnlyList<string> SyncLogLines,
     IReadOnlyList<string> MqttLogLines,
+    HaLogSnapshot ProdHaLog,
+    HaLogSnapshot StagingHaLog,
     bool MirrorConfigured,
     string SyncLogPath,
     string? MqttLogPath,
-    DateTimeOffset RefreshedAt);
+    DateTimeOffset RefreshedAt,
+    IReadOnlyList<OperationLogEntry> OperationLog,
+    string? StagingHaUrl,
+    string? ProdHaUrl);
 
 public sealed record StagingTargetSnapshot(
     string? Url,
@@ -285,6 +446,17 @@ public sealed record StagingTargetSnapshot(
     int StagingMqttPort,
     string? Notes);
 
+public sealed record AppearanceSettings(
+    string ThemeMode = "dark",
+    string BadgeColor = "#ffb74d",
+    string AccentColor = "#03a9f4",
+    string Density = "comfortable",
+    string FontScale = "default",
+    bool ReduceMotion = false,
+    string StatusIntensity = "default",
+    bool HideNavBadges = false,
+    bool HighContrast = false);
+
 public sealed record SettingsView(
     PathSettings Paths,
     ProdSettings Prod,
@@ -293,7 +465,8 @@ public sealed record SettingsView(
     TopologySettings Topology,
     SidecarIntervals Intervals,
     string? StagingHaContainer,
-    StagingTargetSnapshot? StagingTarget);
+    StagingTargetSnapshot? StagingTarget,
+    AppearanceSettings Appearance);
 
 public sealed record SidecarIntervals(
     int PersonPollIntervalSeconds,
@@ -312,8 +485,16 @@ public sealed record SettingsUpdateRequest(
     MirrorSettings Mirror,
     TopologySettings Topology,
     SidecarIntervals Intervals,
-    string? StagingHaContainer);
+    string? StagingHaContainer,
+    AppearanceSettings Appearance);
 
 public sealed record OperationResult(bool Ok, string Message, string? LogTail);
+
+public sealed record OperationLogEntry(
+    string Operation,
+    bool Ok,
+    string Message,
+    string? LogTail,
+    DateTimeOffset When);
 
 public sealed record MirrorModeRequest(bool ControlMode);

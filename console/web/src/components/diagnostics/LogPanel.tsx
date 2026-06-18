@@ -1,18 +1,18 @@
+import { ColoredLogView, plainLinesToColored } from "./ColoredLogView";
+
 export function LogPanel({
   title,
   path,
   lines,
   emptyMessage = "No log lines available.",
-  expanded = true,
 }: {
   title: string;
   path?: string | null;
   lines: string[];
   emptyMessage?: string;
-  expanded?: boolean;
 }) {
   return (
-    <section className="diag-log-panel">
+    <section className="card diag-log-panel">
       <header className="diag-log-head">
         <div>
           <h3>{title}</h3>
@@ -25,9 +25,9 @@ export function LogPanel({
         <span className="muted diag-log-count">{lines.length} line(s)</span>
       </header>
       {lines.length === 0 ? (
-        <p className="muted">{emptyMessage}</p>
+        <p className="muted diag-log-empty">{emptyMessage}</p>
       ) : (
-        <pre className={`diag-log-pre ${expanded ? "diag-log-pre-expanded" : ""}`}>{lines.join("\n")}</pre>
+        <ColoredLogView entries={plainLinesToColored(lines)} />
       )}
     </section>
   );

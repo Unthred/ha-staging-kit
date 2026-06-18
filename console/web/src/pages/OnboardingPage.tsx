@@ -5,6 +5,7 @@ import { ActionButton } from "../components/ActionButton";
 import { Chip } from "../components/Chip";
 import { LoadErrorPanel } from "../components/LoadErrorPanel";
 import { MqttMirrorInstructions } from "../components/MqttMirrorInstructions";
+import { KIT_FQDN } from "../lib/kitHosts";
 import { PathsFormFields } from "../components/PathsFormFields";
 import { PathsHelpPanel } from "../components/PathsHelpPanel";
 import { TestButton } from "../components/TestButton";
@@ -91,8 +92,8 @@ export default function OnboardingPage() {
     null
   );
 
-  const refresh = useCallback(async (syncStep = false) => {
-    const s = await onboardingApi.status();
+  const refresh = useCallback(async (syncStep = false, rescan = false) => {
+    const s = rescan ? await onboardingApi.rescan() : await onboardingApi.status();
     setStatus(s);
     if (s.lastHealthChecks) setHealth(s.lastHealthChecks);
     if (syncStep && !s.isComplete) {
@@ -278,7 +279,7 @@ export default function OnboardingPage() {
               status={status}
               showBack={step > 0}
               onBack={back}
-              onRefresh={() => refresh(false)}
+              onRefresh={() => refresh(false, true)}
               onContinue={async (enabled, haConfirmed) => {
                 setStatus(await onboardingApi.mirror({ ...status.mirror, enabled }));
                 if (enabled && haConfirmed) setStatus(await onboardingApi.confirmHaMqtt());
@@ -577,7 +578,7 @@ function ProdStep({
       </p>
       <label>
         Production HA URL
-        <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://192.168.1.10:8123" />
+        <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder={KIT_FQDN.prodHa} />
       </label>
       <label>
         Production read token {status.prod.hasToken && <span className="configured">configured ✓</span>}
@@ -630,7 +631,7 @@ function StagingStep({
       </p>
       <label>
         Staging HA URL
-        <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://192.168.1.11:8123" />
+        <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder={KIT_FQDN.stagingHa} />
       </label>
       <label>
         Staging write token {status.staging.hasToken && <span className="configured">configured ✓</span>}

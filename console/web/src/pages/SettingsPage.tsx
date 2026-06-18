@@ -1,13 +1,21 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { onboardingApi, settingsApi, toApiError, type ApiError, type SettingsView } from "../api";
+import { SectionAttentionBadge } from "../components/PageAttentionPanel";
+import { DashboardHeader } from "../components/dashboard/DashboardHeader";
 import { LoadErrorPanel } from "../components/LoadErrorPanel";
 import { MqttMirrorInstructions } from "../components/MqttMirrorInstructions";
 import { PathsFormFields } from "../components/PathsFormFields";
 import { PathsHelpPanel } from "../components/PathsHelpPanel";
 import { StagingTargetSummary } from "../components/StagingTargetSummary";
 import { TestButton } from "../components/TestButton";
+import { AppearanceSettingsPanel } from "../components/settings/AppearanceSettingsPanel";
+import { useNavAttentionContext } from "../context/NavAttentionContext";
+import { useAttentionNavigation } from "../hooks/useAttentionNavigation";
+import { KIT_FQDN } from "../lib/kitHosts";
 
 const SECTIONS = [
+  { id: "appearance", title: "Appearance", summary: "Theme, badge colours, and other visual preferences." },
   { id: "paths", title: "Paths & git", summary: "Host folders bind-mounted into the kit container." },
   { id: "production", title: "Production connection", summary: "Production HA API and SSH for secrets/storage." },
   { id: "staging", title: "Staging connection", summary: "Staging HA API for REST updates." },
@@ -19,8 +27,13 @@ const SECTIONS = [
 type SectionId = (typeof SECTIONS)[number]["id"];
 
 export default function SettingsPage() {
-  const [sectionId, setSectionId] = useState<SectionId>("paths");
+  const [searchParams] = useSearchParams();
+  const [sectionId, setSectionId] = useState<SectionId>("appearance");
   const [form, setForm] = useState<SettingsView | null>(null);
+  const { itemsForPath } = useNavAttentionContext();
+  const attentionItems = itemsForPath("/settings");
+  const sectionAttention = (id: SectionId) =>
+    attentionItems.filter((i) => i.settingsSection === id).length;
   const [prodToken, setProdToken] = useState("");
   const [stagingToken, setStagingToken] = useState("");
   const [sshKey, setSshKey] = useState("");
@@ -31,6 +44,15 @@ export default function SettingsPage() {
   useEffect(() => {
     settingsApi.get().then(setForm).catch((e) => setError(toApiError(e)));
   }, []);
+
+  useEffect(() => {
+    const section = searchParams.get("section");
+    if (section && SECTIONS.some((s) => s.id === section)) {
+      setSectionId(section as SectionId);
+    }
+  }, [searchParams]);
+
+  useAttentionNavigation(sectionId);
 
   const current = SECTIONS.find((s) => s.id === sectionId) ?? SECTIONS[0];
 
@@ -77,13 +99,14 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="page ops-page">
-      <div className="page-header">
-        <div>
-          <h2>Settings</h2>
-          <p className="muted">{current.summary}</p>
-        </div>
-      </div>
+    <div className="dash ops-page">
+      <DashboardHeader
+        kicker="Settings"
+        title={current.title}
+        subtitle={current.summary}
+        stagingUrl={form.staging.url}
+        prodUrl={form.prod.url}
+      />
 
       <div className="layout">
         <nav className="sidebar" aria-label="Settings sections">
@@ -94,13 +117,16 @@ export default function SettingsPage() {
               className={`nav-item ${s.id === sectionId ? "active" : ""}`}
               onClick={() => setSectionId(s.id)}
             >
-              {s.title}
+              <span className="settings-nav-label">{s.title}</span>
+              <SectionAttentionBadge count={sectionAttention(s.id)} />
             </button>
           ))}
         </nav>
 
-        <main className="card main-card settings-form">
+        <main className="card main-card settings-form" id={`settings-${sectionId}`}>
           <h2>{current.title}</h2>
+
+          {sectionId === "appearance" && <AppearanceSettingsPanel />}
 
           {sectionId === "paths" && (
             <>
@@ -122,6 +148,7 @@ export default function SettingsPage() {
                 <input
                   value={form.prod.url}
                   onChange={(e) => setForm({ ...form, prod: { ...form.prod, url: e.target.value } })}
+                  placeholder={KIT_FQDN.prodHa}
                 />
               </label>
               <label>
@@ -180,6 +207,7 @@ export default function SettingsPage() {
                 <input
                   value={form.staging.url}
                   onChange={(e) => setForm({ ...form, staging: { ...form.staging, url: e.target.value } })}
+                  placeholder={KIT_FQDN.stagingHa}
                 />
               </label>
               <label>
@@ -297,7 +325,7 @@ export default function SettingsPage() {
                     setForm({ ...form, intervals: { ...form.intervals, applyOnStart: e.target.checked } })
                   }
                 />
-                Apply config when sync loop starts
+                Apply config on every kit restart (not recommended — use Operations → Apply config instead)
               </label>
               <label className="checkbox">
                 <input
@@ -326,11 +354,13 @@ export default function SettingsPage() {
             </>
           )}
 
-          <div className="step-actions-right">
-            <button type="button" className="btn primary" disabled={saving} onClick={save}>
-              {saving ? "Saving…" : "Save settings"}
-            </button>
-          </div>
+          {sectionId !== "appearance" && (
+            <div className="step-actions-right">
+              <button type="button" className="btn primary" disabled={saving} onClick={save}>
+                {saving ? "Saving…" : "Save settings"}
+              </button>
+            </div>
+          )}
           {message && <p className="msg ok">{message}</p>}
           {error && <p className="msg err">{error.detail}</p>}
         </main>

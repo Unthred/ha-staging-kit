@@ -9,17 +9,25 @@ export function ActionButton({
   label,
   onRun,
   onDone,
+  onFailure,
   variant = "primary",
   disabled = false,
+  compact = false,
   toastPreset,
+  title,
+  attentionOrder,
 }: {
   label: string;
   onRun: () => Promise<Result>;
-  onDone?: () => void;
+  onDone?: (result: Result) => void;
+  /** Called when the operation returns ok: false or throws */
+  onFailure?: (result: Result) => void;
   variant?: "primary" | "danger" | "secondary";
   disabled?: boolean;
-  /** Friendly toast copy — e.g. storage-sync, deploy-mirror, refresh-mirror */
+  compact?: boolean;
   toastPreset?: string;
+  title?: string;
+  attentionOrder?: number;
 }) {
   const { push } = useToast();
   const [busy, setBusy] = useState(false);
@@ -27,9 +35,9 @@ export function ActionButton({
   return (
     <button
       type="button"
-      className={`btn ${variant}`}
+      className={`btn ${variant}${compact ? " btn-compact" : ""}`}
       disabled={busy || disabled}
-      title={disabled ? "Not available — check configuration in Settings" : undefined}
+      title={title ?? (disabled ? "Not available — check configuration in Settings" : undefined)}
       onClick={async () => {
         setBusy(true);
         try {
@@ -37,25 +45,39 @@ export function ActionButton({
           const fallback = r.message || (r.ok ? "Done" : "Action failed");
           if (toastPreset) {
             const t = actionToast(toastPreset, r.ok, fallback);
-            push({ message: t.message, tone: t.tone, icon: t.icon });
+            const message = r.message?.trim() ? r.message : t.message;
+            push({ message, tone: t.tone, icon: t.icon });
           } else {
             push({ message: fallback, tone: r.ok ? "ok" : "err" });
           }
-          if (r.ok) onDone?.();
+          if (r.ok) {
+            onDone?.(r);
+          } else {
+            onFailure?.(r);
+          }
         } catch (e) {
           const msg = e instanceof Error ? e.message : "Action failed";
+          const failed: OperationResult = { ok: false, message: msg, logTail: null };
           if (toastPreset) {
             const t = actionToast(toastPreset, false, msg);
             push({ message: t.message, tone: "err", icon: t.icon });
           } else {
             push({ message: msg, tone: "err" });
           }
+          onFailure?.(failed);
         } finally {
           setBusy(false);
         }
       }}
     >
-      {busy ? "Running…" : label}
+      {attentionOrder != null && attentionOrder > 0 ? (
+        <span className="btn-attention-order">
+          <span className="section-attention-badge section-attention-badge--order">{attentionOrder}</span>
+          <span>{busy ? "Running…" : label}</span>
+        </span>
+      ) : (
+        (busy ? "Running…" : label)
+      )}
     </button>
   );
 }

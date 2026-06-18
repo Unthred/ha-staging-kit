@@ -16,6 +16,7 @@ public sealed class KitPaths(IConfiguration config)
     public string StagingTokenFile => Path.Combine(SecretsDir, "ha-staging-api.token");
     public string SshKeyFile => Path.Combine(SecretsDir, "id_ed25519");
     public string LastProdDeployShaFile => Path.Combine(SidecarData, "last-prod-deploy.sha");
+    public string LastProdDeployPreviousShaFile => Path.Combine(SidecarData, "last-prod-deploy-previous.sha");
     public string DeployScript => Path.Combine(KitRoot, "scripts", "deploy.sh");
     public string DeployMirrorScript => Path.Combine(KitRoot, "scripts", "deploy-mirror.sh");
     public string MirrorControlScript => Path.Combine(KitRoot, "scripts", "mirror-control-mode.sh");

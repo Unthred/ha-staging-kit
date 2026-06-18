@@ -8,7 +8,7 @@ After the mirror is deployed, staging Home Assistant must use the **kit mirror b
 
 | Item | Typical value |
 |------|----------------|
-| Host | LAN IP of machine running the kit mirror (e.g. Unraid `192.168.13.1`) |
+| Host | Kit Docker host — LAN IP or a DNS name that resolves **directly** to that host (not HAProxy). Example: `192.168.13.1` or a host-level FQDN on port `1883`. HA URLs like `https://ha-staging-kit.yeradonkey.com` go through HAProxy and do **not** expose MQTT. |
 | Port | `1883` (or `MIRROR_PORT` in `.env`) |
 | Username / password | Same as prod Mosquitto (`homeassistant` user from synced `.storage` / secrets) |
 
@@ -18,7 +18,7 @@ After the mirror is deployed, staging Home Assistant must use the **kit mirror b
 2. **Settings → Devices & services** → **Integrations**.
 3. Click **MQTT**.
 4. On **Mosquitto MQTT Broker**, open **⋮** → **Configure** (reconfigure).
-5. Change **Broker** from `core-mosquitto` (prod) to the **kit host LAN IP** (e.g. `192.168.13.1`). Port `1883`.
+5. Change **Broker** from `core-mosquitto` (prod) to the **kit host** (e.g. `192.168.13.1` or `KIT_MQTT_BROKER` from kit Settings). Port `1883`.
 6. Keep prod username/password. Save; reload MQTT if needed.
 
 After storage sync from prod, the integration often still points at `core-mosquitto` — that name means prod on HA OS. On Docker staging, point it at the mirror IP explicitly.

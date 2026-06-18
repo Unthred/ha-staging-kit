@@ -1,4 +1,4 @@
-import { DashboardOpenLinks } from "./DashboardOpenLinks";
+import { HaLogo } from "../HaLogo";
 import { formatRefreshLabel } from "../../lib/formatTime";
 
 export function DashboardHeader({
@@ -18,9 +18,9 @@ export function DashboardHeader({
   refreshedAt?: string;
   stagingUrl?: string | null;
   prodUrl?: string | null;
-  busy: boolean;
+  busy?: boolean;
   compact?: boolean;
-  onRefresh: () => void;
+  onRefresh?: () => void;
 }) {
   const today = new Intl.DateTimeFormat(undefined, {
     weekday: "long",
@@ -30,17 +30,34 @@ export function DashboardHeader({
 
   return (
     <header className={`dash-header ${compact ? "dash-header-compact" : ""}`}>
-      <div>
-        {!compact && <p className="dash-kicker">{kicker}</p>}
-        <h2 className="dash-title">{compact ? "Staging overview" : title}</h2>
-        <p className="dash-subtitle">
-          {subtitle ?? today} · {formatRefreshLabel(refreshedAt)}
-        </p>
-        <DashboardOpenLinks stagingUrl={stagingUrl} prodUrl={prodUrl} />
+      <div className="dash-header-brand">
+        <HaLogo size={80} />
+        <div>
+          <p className="dash-kicker">{kicker}</p>
+          <h2 className="dash-title">{title}</h2>
+          <p className="dash-subtitle">
+            {subtitle ?? today}
+            {refreshedAt && ` · ${formatRefreshLabel(refreshedAt)}`}
+          </p>
+        </div>
       </div>
-      <button type="button" className="dash-refresh btn secondary" disabled={busy} onClick={onRefresh}>
-        {busy ? "Refreshing…" : "Refresh"}
-      </button>
+      <div className="dash-header-actions">
+        {prodUrl && (
+          <a href={prodUrl} target="_blank" rel="noreferrer" className="btn secondary">
+            Prod HA
+          </a>
+        )}
+        {stagingUrl && (
+          <a href={stagingUrl} target="_blank" rel="noreferrer" className="btn secondary">
+            Staging HA
+          </a>
+        )}
+        {onRefresh && (
+          <button type="button" className="btn secondary dash-refresh" disabled={busy} onClick={onRefresh}>
+            {busy ? "Refreshing…" : "Refresh"}
+          </button>
+        )}
+      </div>
     </header>
   );
 }

@@ -1,13 +1,21 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { LoadErrorPanel } from "../components/LoadErrorPanel";
 import { DashboardActivityTimeline } from "../components/dashboard/DashboardActivityTimeline";
 import { DashboardInstanceMonitoring } from "../components/dashboard/DashboardInstanceMonitoring";
 import { DashboardMetricCard } from "../components/dashboard/DashboardMetricCard";
 import { DashboardLiveMetrics } from "../components/dashboard/DashboardLiveMetrics";
-import { DashboardParityBanner } from "../components/dashboard/DashboardParityBanner";
+import {
+  DeployFlowGateSection,
+  DeployFlowShipSection,
+} from "../components/dashboard/DeployFlowPanel";
 import { DashboardPageShell } from "../components/dashboard/DashboardPageShell";
 import { shortDetail, statusTone } from "../lib/dashboardHealth";
 import { isMirrorControlMode, mirrorModeLabel } from "../lib/mirrorMode";
+import { useNavAttentionContext } from "../context/NavAttentionContext";
+import { useAttentionNavigation } from "../hooks/useAttentionNavigation";
+import { useDeployFlow } from "../hooks/useDeployFlow";
+import { attentionCountForAnchor, overviewAttentionOrders } from "../lib/navAttention";
 import { useDashboardStatus } from "../hooks/useDashboardStatus";
 import type { DashboardStatus } from "../api";
 
@@ -22,6 +30,15 @@ function mirrorMeta(data?: DashboardStatus | null): string | undefined {
 
 export default function DashboardLivePage() {
   const { data, error, busy, refresh } = useDashboardStatus();
+  const [commitOpen, setCommitOpen] = useState(false);
+  const { itemsForPath } = useNavAttentionContext();
+  const attentionItems = itemsForPath("/");
+  useAttentionNavigation([attentionItems.length]);
+  const deployFlow = useDeployFlow({
+    git: data?.git,
+    configDrift: data?.configDrift,
+    onDone: refresh,
+  });
 
   if (error && !data) {
     return (
@@ -36,6 +53,9 @@ export default function DashboardLivePage() {
   }
 
   const issueCount = data?.issues.length ?? 0;
+  const overviewOrders = overviewAttentionOrders(attentionItems);
+  const haErrorsAttention = attentionCountForAnchor(attentionItems, "overview-ha-errors");
+  const gitConfigured = data?.git?.configured ?? false;
 
   return (
     <DashboardPageShell
@@ -50,31 +70,55 @@ export default function DashboardLivePage() {
       {data?.mirror?.configured && isMirrorControlMode(data.mirror.mode) && (
         <div className="dash-banner dash-banner-danger dash-banner-compact">
           Control mode — staging can actuate prod.{" "}
-          <Link to="/operations">Switch to read-only</Link>
+          <Link to="/environment#mirror-control">Switch to read-only</Link>
         </div>
       )}
 
-      <DashboardParityBanner compact representation={data?.stagingRepresentation} git={data?.git} />
-
-      <DashboardLiveMetrics metrics={data?.liveMetrics} />
+      <DashboardLiveMetrics
+        metrics={data?.liveMetrics}
+        haIssues={data?.haIssues ?? []}
+        haAttentionCount={haErrorsAttention}
+        haAttentionOrder={overviewOrders["ha-errors"]}
+      />
 
       <div className="dash-live-grid">
-        <DashboardInstanceMonitoring
-          inventory={data?.configInventory}
-          prod={data?.prodMonitoring}
-          staging={data?.stagingMonitoring}
-          entityParity={data?.entityParity}
-          representation={data?.stagingRepresentation}
-          configDrift={data?.configDrift}
-          git={data?.git}
-          syncActivity={data?.syncActivity}
-          presence={data?.presence}
-          mqtt={data?.mqttBridge}
-          mirror={data?.mirror}
-          gitConfigured={data?.git?.configured ?? false}
-          mirrorConfigured={data?.mirror?.configured ?? false}
-          onRemediate={refresh}
-        />
+        <div className="dash-live-primary-stack">
+          {gitConfigured && (
+            <DeployFlowGateSection flow={deployFlow} attentionOrder={overviewOrders["deploy-gate"]} />
+          )}
+
+          <DashboardInstanceMonitoring
+            inventory={data?.configInventory}
+            prod={data?.prodMonitoring}
+            staging={data?.stagingMonitoring}
+            entityParity={data?.entityParity}
+            representation={data?.stagingRepresentation}
+            configDrift={data?.configDrift}
+            git={data?.git}
+            presence={data?.presence}
+            mqtt={data?.mqttBridge}
+            mirror={data?.mirror}
+            gitConfigured={gitConfigured}
+            mirrorConfigured={data?.mirror?.configured ?? false}
+            onRemediate={refresh}
+            commitOpen={commitOpen}
+            onCommitOpen={() => setCommitOpen(true)}
+            onCommitClose={() => setCommitOpen(false)}
+            attentionOrder={overviewOrders.parity}
+          />
+
+          {gitConfigured && (
+            <DeployFlowShipSection
+              flow={deployFlow}
+              onOpenCommit={() => setCommitOpen(true)}
+              attentionOrders={{
+                commit: overviewOrders["deploy-commit"],
+                push: overviewOrders["deploy-push"],
+                prod: overviewOrders["deploy-prod"],
+              }}
+            />
+          )}
+        </div>
 
         <section className="dash-live-secondary">
           <DashboardActivityTimeline compact activity={data?.syncActivity} />

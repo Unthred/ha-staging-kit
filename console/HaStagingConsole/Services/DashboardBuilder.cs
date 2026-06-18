@@ -9,12 +9,18 @@ namespace HaStagingConsole.Services;
 
 public sealed partial class DashboardBuilder(
     KitPaths paths,
+    GitSshConfigurator gitSsh,
+    StagingUiCapture stagingUiCapture,
     IHttpClientFactory httpClientFactory)
 {
     public async Task<GitSnapshotStatus> GetGitSnapshotAsync(Dictionary<string, string> env, CancellationToken ct)
     {
         if (!Directory.Exists("/repo/.git"))
-            return new GitSnapshotStatus(false, null, null, null, null, false, 0, false, 0, false, 0, [], [], [], [], null, null, null, null, 0, null, 0);
+            return new GitSnapshotStatus(false, null, null, null, null, false, 0, false, 0, false, 0, [], [], [], [], null, null, null, null, 0, null, 0, 0, [], [], [], [], false, null, null);
+
+        await stagingUiCapture.CaptureIfNeededAsync(ct);
+
+        await RunGitCommandAsync("/repo", ct, "fetch", "origin");
 
         var branch = env.GetValueOrDefault("HA_BRANCH", "staging");
         var head = await RunGitAsync("/repo", "rev-parse", "--short", "HEAD");
@@ -40,9 +46,11 @@ public sealed partial class DashboardBuilder(
         if (int.TryParse(aheadRaw, out var a)) ahead = a;
         if (int.TryParse(behindRaw, out var b)) behind = b;
 
-        // Staging → main gap: how many commits are on origin/staging not yet merged to origin/main
+        // Staging → main gap: commits on origin/staging not yet merged to origin/main
         int? stagingAheadOfMain = null;
         var stagingHaChanges = 0;
+        IReadOnlyList<string> stagingHaFileList = [];
+        IReadOnlyList<string> stagingRepoFileList = [];
         var stagingMainCountRaw = await RunGitAsync("/repo", "rev-list", "--count", "origin/main..origin/staging");
         if (int.TryParse(stagingMainCountRaw, out var sam))
         {
@@ -50,16 +58,26 @@ public sealed partial class DashboardBuilder(
             if (sam > 0)
             {
                 var diff = await RunGitAsync("/repo", "diff", "--name-only", "origin/main..origin/staging");
-                stagingHaChanges = diff
-                    .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                    .Count(IsHaDeployPath);
+                var files = diff.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                var haFiles = files.Where(IsHaDeployPath).ToList();
+                var repoFiles = files.Where(f => !IsHaDeployPath(f)).ToList();
+                stagingHaChanges = haFiles.Count;
+                stagingHaFileList = haFiles.Take(30).ToList();
+                stagingRepoFileList = repoFiles.Take(30).ToList();
             }
         }
 
-        // Main → prod HA gap: how many commits on origin/main since the last kit deploy
+        // Main → prod HA gap: commits on origin/main since the last kit deploy
         int? mainAheadOfProdHa = null;
         var mainHaChangesForProdHa = 0;
+        var mainStorageChangesForProdHa = 0;
+        IReadOnlyList<string> mainHaFileList = [];
+        IReadOnlyList<string> mainStorageFileList = [];
         var lastDeployedSha = ReadLastDeployedSha();
+        var prodDeployTracked = !string.IsNullOrWhiteSpace(lastDeployedSha);
+        var prodPreviousDeploySha = ReadPreviousDeployedSha();
+        if (string.IsNullOrWhiteSpace(prodPreviousDeploySha))
+            prodPreviousDeploySha = null;
         if (!string.IsNullOrWhiteSpace(lastDeployedSha))
         {
             var mainCountRaw = await RunGitAsync("/repo", "rev-list", "--count", $"{lastDeployedSha}..origin/main");
@@ -69,9 +87,35 @@ public sealed partial class DashboardBuilder(
                 if (map > 0)
                 {
                     var diff = await RunGitAsync("/repo", "diff", "--name-only", $"{lastDeployedSha}..origin/main");
-                    mainHaChangesForProdHa = diff
+                    var files = diff.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                    var haFiles = files.Where(IsProdDeployPath).ToList();
+                    var storageFiles = files.Where(IsStorageDeployPath).ToList();
+                    mainHaChangesForProdHa = haFiles.Count;
+                    mainStorageChangesForProdHa = storageFiles.Count;
+                    mainHaFileList = haFiles.Take(30).ToList();
+                    mainStorageFileList = storageFiles.Take(30).ToList();
+                }
+            }
+        }
+        else
+        {
+            // No successful prod deploy recorded — everything on origin/main is pending for prod HA
+            var mainCountRaw = await RunGitAsync("/repo", "rev-list", "--count", "origin/main");
+            if (int.TryParse(mainCountRaw, out var map))
+            {
+                mainAheadOfProdHa = map;
+                if (map > 0)
+                {
+                    var ls = await RunGitAsync("/repo", "ls-tree", "-r", "--name-only", "origin/main");
+                    var allFiles = ls
                         .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                        .Count(IsHaDeployPath);
+                        .ToList();
+                    var haFiles = allFiles.Where(IsProdDeployPath).ToList();
+                    var storageFiles = allFiles.Where(IsStorageDeployPath).ToList();
+                    mainHaChangesForProdHa = haFiles.Count;
+                    mainStorageChangesForProdHa = storageFiles.Count;
+                    mainHaFileList = haFiles.Take(30).ToList();
+                    mainStorageFileList = storageFiles.Take(30).ToList();
                 }
             }
         }
@@ -98,7 +142,15 @@ public sealed partial class DashboardBuilder(
             stagingAheadOfMain,
             stagingHaChanges,
             mainAheadOfProdHa,
-            mainHaChangesForProdHa);
+            mainHaChangesForProdHa,
+            mainStorageChangesForProdHa,
+            stagingHaFileList,
+            stagingRepoFileList,
+            mainHaFileList,
+            mainStorageFileList,
+            prodDeployTracked,
+            string.IsNullOrWhiteSpace(lastDeployedSha) ? null : lastDeployedSha,
+            prodPreviousDeploySha);
     }
 
     static (int HaCount, int RepoCount, IReadOnlyList<string> HaSamples, IReadOnlyList<string> RepoSamples, IReadOnlyList<string> HaFiles, IReadOnlyList<string> RepoFiles) ClassifyGitStatus(
@@ -119,6 +171,7 @@ public sealed partial class DashboardBuilder(
             var arrow = path.IndexOf(" -> ", StringComparison.Ordinal);
             if (arrow >= 0)
                 path = path[(arrow + 4)..].Trim();
+            path = path.Trim().Trim('"');
 
             if (IsHaConfigPath(path))
                 haPaths.Add(path);
@@ -135,35 +188,18 @@ public sealed partial class DashboardBuilder(
             repoPaths);
     }
 
-    static bool IsHaConfigPath(string path)
+    static bool IsHaConfigPath(string path) => IsHaDeployPath(path);
+
+    // .storage/ files tracked in git — Lovelace dashboards and UI-created helpers.
+    static readonly HashSet<string> TrackedStorageFiles = new(StringComparer.OrdinalIgnoreCase)
     {
-        path = path.Replace('\\', '/').TrimStart('/');
-        if (path.Length == 0)
-            return false;
-
-        if (path.StartsWith("packages/", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(path, "packages", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        if (path.StartsWith("themes/", StringComparison.OrdinalIgnoreCase)
-            || path.StartsWith("blueprints/", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        if (path.Contains('/', StringComparison.Ordinal))
-            return false;
-
-        if (!path.EndsWith(".yaml", StringComparison.OrdinalIgnoreCase)
-            && !path.EndsWith(".yml", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        return !string.Equals(path, "secrets.yaml", StringComparison.OrdinalIgnoreCase);
-    }
+        ".storage/lovelace.lovelace", ".storage/lovelace.map",
+        ".storage/lovelace_dashboards", ".storage/lovelace_resources",
+        ".storage/input_boolean", ".storage/input_number", ".storage/input_select",
+        ".storage/input_text", ".storage/input_datetime",
+        ".storage/timer", ".storage/counter", ".storage/schedule",
+        ".storage/todo", ".storage/scheduler.storage",
+    };
 
     // Broader check used for staging→main and main→prod HA diffs — matches what OperationsService deploys.
     static bool IsHaDeployPath(string path)
@@ -171,7 +207,9 @@ public sealed partial class DashboardBuilder(
         path = path.Replace('\\', '/').TrimStart('/');
         if (path.Length == 0) return false;
 
-        foreach (var dir in (string[])["packages/", "python_scripts/", "custom_components/", "blueprints/", "www/", "themes/", "lovelace/"])
+        if (TrackedStorageFiles.Contains(path)) return true;
+
+        foreach (var dir in (string[])["packages/", "python_scripts/", "custom_components/", "blueprints/", "www/", "themes/", "lovelace/", "zigbee2mqtt/"])
             if (path.StartsWith(dir, StringComparison.OrdinalIgnoreCase)) return true;
 
         if (path.Contains('/')) return false;
@@ -179,10 +217,91 @@ public sealed partial class DashboardBuilder(
         return !string.Equals(path, "secrets.yaml", StringComparison.OrdinalIgnoreCase);
     }
 
+    static bool IsProdDeployPath(string path) =>
+        IsHaDeployPath(path) && !path.StartsWith(".storage/", StringComparison.OrdinalIgnoreCase);
+
+    static bool IsStorageDeployPath(string path) =>
+        path.StartsWith(".storage/", StringComparison.OrdinalIgnoreCase) && IsHaDeployPath(path);
+
     string ReadLastDeployedSha()
     {
         try { return File.ReadAllText(paths.LastProdDeployShaFile).Trim(); }
         catch { return ""; }
+    }
+
+    string ReadPreviousDeployedSha()
+    {
+        try { return File.ReadAllText(paths.LastProdDeployPreviousShaFile).Trim(); }
+        catch { return ""; }
+    }
+
+    public async Task<GitFileDiffResult?> GetStagingVsMainFileDiffAsync(string relativePath, CancellationToken ct)
+    {
+        if (!Directory.Exists("/repo/.git"))
+            return null;
+
+        relativePath = relativePath.Replace('\\', '/').TrimStart('/');
+        if (string.IsNullOrWhiteSpace(relativePath) || relativePath.Contains("..", StringComparison.Ordinal))
+            return null;
+
+        var fullPath = Path.GetFullPath(Path.Combine("/repo", relativePath));
+        if (!fullPath.StartsWith("/repo/", StringComparison.Ordinal))
+            return null;
+
+        var diff = await RunGitAsync("/repo", "diff", "origin/main..origin/staging", "--", relativePath);
+
+        if (string.IsNullOrWhiteSpace(diff))
+            diff = $"(No diff for {relativePath} between origin/main and origin/staging — file may be identical or not present on both refs.)";
+
+        const int maxChars = 120_000;
+        if (diff.Length > maxChars)
+            diff = diff[..maxChars] + "\n\n… diff truncated …";
+
+        return new GitFileDiffResult(relativePath, "modified", diff);
+    }
+
+    public async Task<GitFileDiffResult?> GetMainProdPendingFileDiffAsync(string relativePath, CancellationToken ct)
+    {
+        if (!Directory.Exists("/repo/.git"))
+            return null;
+
+        relativePath = relativePath.Replace('\\', '/').TrimStart('/');
+        if (string.IsNullOrWhiteSpace(relativePath) || relativePath.Contains("..", StringComparison.Ordinal))
+            return null;
+
+        var fullPath = Path.GetFullPath(Path.Combine("/repo", relativePath));
+        if (!fullPath.StartsWith("/repo/", StringComparison.Ordinal))
+            return null;
+
+        var lastDeployed = ReadLastDeployedSha();
+        var rangeBase = string.IsNullOrWhiteSpace(lastDeployed)
+            ? "4b825dc642cb6eb9a060e54bf8d69288fbee4904" // empty tree — never deployed
+            : lastDeployed;
+
+        var diff = await RunGitAsync("/repo", "diff", $"{rangeBase}..origin/main", "--", relativePath);
+
+        if (string.IsNullOrWhiteSpace(diff))
+            diff = $"(No diff for {relativePath} between last prod deploy and origin/main.)";
+
+        const int maxChars = 120_000;
+        if (diff.Length > maxChars)
+            diff = diff[..maxChars] + "\n\n… diff truncated …";
+
+        return new GitFileDiffResult(relativePath, "modified", diff);
+    }
+
+    public async Task<GitChangedFilesResult> GetGitChangedFilesAsync(CancellationToken ct)
+    {
+        if (!Directory.Exists("/repo/.git"))
+            return new GitChangedFilesResult([], []);
+
+        var status = await RunGitAsync("/repo", "status", "--porcelain");
+        var (haCount, repoCount, haSamples, repoSamples, haPaths, repoPaths) = ClassifyGitStatus(status);
+        _ = haCount;
+        _ = repoCount;
+        _ = haSamples;
+        _ = repoSamples;
+        return new GitChangedFilesResult(haPaths, repoPaths);
     }
 
     public async Task<GitFileDiffResult?> GetGitFileDiffAsync(string relativePath, CancellationToken ct)
@@ -248,18 +367,30 @@ public sealed partial class DashboardBuilder(
         }
 
         var normalizedScope = scope.Trim().ToLowerInvariant();
-        if (normalizedScope is not ("ha" or "repo"))
-            return new OperationResult(false, "Invalid scope — use ha or repo", null);
+        if (normalizedScope is not ("ha" or "repo" or "all"))
+            return new OperationResult(false, "Invalid scope — use ha, repo, or all", null);
+
+        await stagingUiCapture.CaptureIfNeededAsync(ct);
 
         var status = await RunGitAsync("/repo", "status", "--porcelain");
         var (_, _, _, _, haPaths, repoPaths) = ClassifyGitStatus(status);
-        var paths = normalizedScope == "ha" ? haPaths : repoPaths;
+        var paths = normalizedScope switch
+        {
+            "ha" => haPaths,
+            "repo" => repoPaths,
+            _ => haPaths.Concat(repoPaths).ToList(),
+        };
 
         if (paths.Count == 0)
         {
             return new OperationResult(
                 false,
-                normalizedScope == "ha" ? "No HA YAML changes to commit" : "No docs/repo changes to commit",
+                normalizedScope switch
+                {
+                    "ha" => "No HA YAML changes to commit",
+                    "repo" => "No docs/repo changes to commit",
+                    _ => "No changes to commit",
+                },
                 null);
         }
 
@@ -273,9 +404,16 @@ public sealed partial class DashboardBuilder(
         }
 
         var commitMessage = string.IsNullOrWhiteSpace(message)
-            ? normalizedScope == "ha"
-                ? "chore(ha): update Home Assistant config"
-                : "chore: update docs and repo files"
+            ? normalizedScope switch
+            {
+                "ha" => "chore(ha): update Home Assistant config",
+                "repo" => "chore: update docs and repo files",
+                _ => haPaths.Count > 0 && repoPaths.Count > 0
+                    ? "chore: update Home Assistant config and repo files"
+                    : haPaths.Count > 0
+                        ? "chore(ha): update Home Assistant config"
+                        : "chore: update docs and repo files",
+            }
             : message.Trim();
 
         var (authorName, authorEmail, identityError) = await ResolveGitIdentityAsync(ct);
@@ -342,6 +480,10 @@ public sealed partial class DashboardBuilder(
                 null);
         }
 
+        var (authorName, authorEmail, identityError) = await ResolveGitIdentityAsync(ct);
+        if (identityError is not null)
+            return identityError;
+
         var originalBranch = await RunGitAsync("/repo", "rev-parse", "--abbrev-ref", "HEAD");
 
         var (fetchOk, _, fetchErr) = await RunGitCommandAsync("/repo", ct, "fetch", "origin");
@@ -363,6 +505,8 @@ public sealed partial class DashboardBuilder(
         var (mergeOk, _, mergeErr) = await RunGitCommandAsync(
             "/repo",
             ct,
+            "-c", $"user.name={authorName}",
+            "-c", $"user.email={authorEmail}",
             "merge",
             $"origin/{stagingBranch}",
             "-m",
@@ -411,13 +555,10 @@ public sealed partial class DashboardBuilder(
                 File.Exists(paths.HostEnvFile) ? EnvFile.Get(paths.HostEnvFile, "GIT_USER_EMAIL") : null);
         }
 
-        if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(email))
-        {
-            return ("", "", new OperationResult(
-                false,
-                "Git author not configured — set GIT_USER_NAME and GIT_USER_EMAIL in kit .env, or git config user.name/user.email in the repo",
-                null));
-        }
+        if (string.IsNullOrWhiteSpace(name))
+            name = "ha-staging-kit";
+        if (string.IsNullOrWhiteSpace(email))
+            email = "ha-staging-kit@localhost";
 
         return (name.Trim(), email.Trim(), null);
     }
@@ -464,7 +605,7 @@ public sealed partial class DashboardBuilder(
         return sb.ToString();
     }
 
-    public ConfigDriftStatus GetConfigDrift(GitSnapshotStatus? git)
+    public async Task<ConfigDriftStatus> GetConfigDriftAsync(GitSnapshotStatus? git, CancellationToken ct)
     {
         if (git is not { Configured: true } || string.IsNullOrWhiteSpace(git.CommitHash))
             return new ConfigDriftStatus(false, null, null, "Git repo not available");
@@ -475,21 +616,34 @@ public sealed partial class DashboardBuilder(
                 true,
                 git.CommitHash,
                 null,
-                "Config has not been applied since tracking started — run Apply staging config");
+                "Never applied — click Reload from repo to apply the current git commit to staging HA");
 
         var applied = File.ReadAllText(marker).Trim();
         var appliedShort = applied.Length > 7 ? applied[..7] : applied;
         if (applied.StartsWith(git.CommitHash, StringComparison.OrdinalIgnoreCase)
             || git.CommitHash.StartsWith(appliedShort, StringComparison.OrdinalIgnoreCase))
         {
-            return new ConfigDriftStatus(false, git.CommitHash, appliedShort, "Staging matches latest git commit");
+            return new ConfigDriftStatus(false, git.CommitHash, appliedShort, "Staging HA is running the current git commit");
         }
+
+        // Determine whether the unapplied gap contains HA config changes
+        var gapDiff = await RunGitAsync("/repo", "diff", "--name-only", $"{applied}..HEAD");
+        var gapFiles = gapDiff.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        // Only count files apply-config actually rsyncs to staging (excludes .storage — UI snapshot path).
+        var haGapCount = gapFiles.Count(p =>
+            IsHaDeployPath(p) && !p.StartsWith(".storage/", StringComparison.OrdinalIgnoreCase));
+
+        var detail = haGapCount > 0
+            ? $"{haGapCount} HA config file{(haGapCount == 1 ? "" : "s")} changed since last apply — click Reload from repo to test on staging HA"
+            : $"Docs/scripts changed since last apply (git {git.CommitHash} vs applied {appliedShort}) — no HA config changes, no action needed";
 
         return new ConfigDriftStatus(
             true,
             git.CommitHash,
             appliedShort,
-            $"Git is at {git.CommitHash} but last apply was {appliedShort}");
+            detail,
+            haGapCount > 0,
+            haGapCount);
     }
 
     public PersonSyncSnapshot ParsePersonSync(string logs)
@@ -587,7 +741,7 @@ public sealed partial class DashboardBuilder(
         try
         {
             var client = httpClientFactory.CreateClient();
-            client.Timeout = TimeSpan.FromSeconds(15);
+            client.Timeout = TimeSpan.FromSeconds(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
             using var response = await client.GetAsync($"{url.TrimEnd('/')}/api/states", ct);
             if (!response.IsSuccessStatusCode)
@@ -707,19 +861,36 @@ public sealed partial class DashboardBuilder(
         PresenceSummary? presence)
     {
         var issues = new List<RepresentationIssue>();
-        var configMatches = drift is not { HasDrift: true };
+        // Docs/scripts commits after last apply do not change staging HA YAML — only never-applied or HA gaps are real drift.
+        var configMatches = drift switch
+        {
+            null => true,
+            { HasDrift: false } => true,
+            { HasDrift: true, LastAppliedCommit: null } => false,
+            { HasDrift: true, ApplyGapHasHaChanges: true } => false,
+            { HasDrift: true, ApplyGapHasHaChanges: false } => true,
+        };
         var gitClean = git is not { IsHaDirty: true };
         var entityAligned = entityParity is not { Available: true } || entityParity.IsAligned;
         var presenceMatches = presence is null
             || (presence.ProdPersonCount == presence.StagingPersonCount
                 && presence.MatchedCount == presence.ProdPersonCount);
 
-        if (drift is { HasDrift: true })
+        if (drift is { HasDrift: true, ApplyGapHasHaChanges: true })
         {
             issues.Add(new RepresentationIssue(
                 "error",
                 "config",
-                "Config not applied to staging",
+                $"{drift.ApplyGapHaFileCount} HA config file{(drift.ApplyGapHaFileCount == 1 ? "" : "s")} not yet applied to staging HA",
+                drift.Detail,
+                []));
+        }
+        else if (drift is { HasDrift: true, ApplyGapHasHaChanges: false, LastAppliedCommit: not null })
+        {
+            issues.Add(new RepresentationIssue(
+                "info",
+                "config",
+                "Docs/scripts changed since last apply — staging HA YAML unchanged",
                 drift.Detail,
                 []));
         }
@@ -784,8 +955,23 @@ public sealed partial class DashboardBuilder(
         if (issues.Any(i => i.Severity == "error"))
         {
             verdict = "drift";
-            headline = "Staging does not match production";
-            summary = "Fix the items below before trusting staging as a prod stand-in.";
+            var configIssue = issues.FirstOrDefault(i => i.Category == "config");
+            var entityIssue = issues.FirstOrDefault(i => i.Category == "entity");
+            if (configIssue != null && entityIssue == null)
+            {
+                headline = configIssue.Title;
+                summary = "Click Reload from repo in the Config & git row to apply and test on staging HA.";
+            }
+            else if (entityIssue != null && configIssue == null)
+            {
+                headline = "Entity count differs between staging and production";
+                summary = "Check the parity table rows below for details.";
+            }
+            else
+            {
+                headline = "Staging does not match production";
+                summary = "Review the items below before trusting staging as a prod stand-in.";
+            }
         }
         else if (issues.Any(i => i.Severity == "warn"))
         {
@@ -806,19 +992,35 @@ public sealed partial class DashboardBuilder(
             summary =
                 $"Prod/staging parity is good. {git.RepoChangedFileCount} doc or tooling file(s) uncommitted in git — safe to ignore for HA testing.";
         }
-        else if (entityParity is { Available: true, IsAligned: true } && configMatches && presenceMatches)
+        else if (configMatches && entityAligned && presenceMatches && gitClean)
         {
             verdict = "aligned";
             headline = "Staging matches production";
-            if (entityParity.ExpectedStagingOnlyCount > 0)
+            if (entityParity is { Available: true, ExpectedStagingOnlyCount: > 0 })
             {
                 summary =
                     $"Config, entity registry, and presence align with production ({entityParity.ExpectedStagingOnlyCount} expected kit entity(ies) on staging only).";
+            }
+            else if (drift is { HasDrift: true, ApplyGapHasHaChanges: false, LastAppliedCommit: not null })
+            {
+                summary =
+                    "Staging HA YAML matches production. Newer doc commits in git are cosmetic — no commit, push, or deploy needed.";
+            }
+            else if (git is { IsRepoDirty: true })
+            {
+                summary =
+                    $"Prod/staging parity is good. {git.RepoChangedFileCount} doc or tooling file(s) uncommitted in git — safe to ignore for HA testing.";
             }
             else
             {
                 summary = "Config applied, entity registry aligned, and person states match — safe to use staging as a prod stand-in.";
             }
+        }
+        else if (entityParity is not { Available: true } && configMatches && gitClean)
+        {
+            verdict = "review";
+            headline = "Staging config matches — entity parity unavailable";
+            summary = "Could not compare entity registries — check prod and staging API tokens in Settings.";
         }
         else
         {
@@ -1136,6 +1338,30 @@ public sealed partial class DashboardBuilder(
             }
         }
 
+        var personPollIssue = issues.FirstOrDefault(i =>
+            i.Message.Contains("Person poll failed", StringComparison.OrdinalIgnoreCase));
+        if (personPollIssue is not null)
+        {
+            return new SuggestedAction(
+                "Person poll cannot reach production",
+                personPollIssue.Message + " Open Diagnostics for the sync log and poll history.",
+                "/diagnostics",
+                "Open Diagnostics",
+                "warning",
+                "person-poll");
+        }
+
+        var errorCount = issues.Count(i => i.Level == "error");
+        if (errorCount > 0)
+        {
+            return new SuggestedAction(
+                "Review kit diagnostics",
+                $"{errorCount} error signal{(errorCount == 1 ? "" : "s")} in recent logs — open Diagnostics for details.",
+                "/diagnostics",
+                "Open Diagnostics",
+                "warning");
+        }
+
         if (drift is { HasDrift: true })
         {
             return new SuggestedAction(
@@ -1204,6 +1430,20 @@ public sealed partial class DashboardBuilder(
                 "info");
         }
 
+        if (issues.Count > 0)
+        {
+            var warnCount = issues.Count(i => i.Level == "warn");
+            var errorIssueCount = issues.Count(i => i.Level == "error");
+            return new SuggestedAction(
+                "Review kit diagnostics",
+                warnCount > 0
+                    ? $"{warnCount} warning signal{(warnCount == 1 ? "" : "s")} in recent logs — open Diagnostics for details."
+                    : $"{issues.Count} signal(s) in recent logs — open Diagnostics for details.",
+                "/diagnostics",
+                "Open Diagnostics",
+                warnCount > 0 || errorIssueCount > 0 ? "warning" : "info");
+        }
+
         if (staging?.Status == "warn")
         {
             return new SuggestedAction(
@@ -1211,16 +1451,6 @@ public sealed partial class DashboardBuilder(
                 staging.Detail,
                 "/settings",
                 "Staging settings",
-                "info");
-        }
-
-        if (issues.Count > 0)
-        {
-            return new SuggestedAction(
-                "Review active warnings",
-                $"{issues.Count} component warning(s) in the log tail — open Diagnostics for details.",
-                "/diagnostics",
-                "Open Operations",
                 "info");
         }
 
@@ -1252,7 +1482,7 @@ public sealed partial class DashboardBuilder(
         try
         {
             var client = httpClientFactory.CreateClient();
-            client.Timeout = TimeSpan.FromSeconds(15);
+            client.Timeout = TimeSpan.FromSeconds(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
             using var response = await client.GetAsync($"{url.TrimEnd('/')}/api/states", ct);
             if (!response.IsSuccessStatusCode)
@@ -1286,7 +1516,7 @@ public sealed partial class DashboardBuilder(
         try
         {
             var client = httpClientFactory.CreateClient();
-            client.Timeout = TimeSpan.FromSeconds(15);
+            client.Timeout = TimeSpan.FromSeconds(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
             using var response = await client.GetAsync($"{url.TrimEnd('/')}/api/states", ct);
             if (!response.IsSuccessStatusCode)
@@ -1537,7 +1767,7 @@ public sealed partial class DashboardBuilder(
         foreach (var arg in args)
             psi.ArgumentList.Add(arg);
 
-        ConfigureGitSsh(psi);
+        gitSsh.Apply(psi);
 
         using var process = Process.Start(psi);
         if (process is null)
@@ -1549,57 +1779,6 @@ public sealed partial class DashboardBuilder(
         var stdout = (await stdoutTask).Trim();
         var stderr = (await stderrTask).Trim();
         return (process.ExitCode == 0, stdout, stderr);
-    }
-
-    void ConfigureGitSsh(ProcessStartInfo psi)
-    {
-        if (!File.Exists(paths.SshKeyFile))
-            return;
-
-        var knownHosts = Path.Combine(paths.SecretsDir, "known_hosts");
-        EnsureGitHubKnownHosts(knownHosts);
-        var sshCommand =
-            $"ssh -i {ShellQuote(paths.SshKeyFile)} -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile={ShellQuote(knownHosts)}";
-        psi.Environment["GIT_SSH_COMMAND"] = sshCommand;
-        psi.Environment["GIT_SSH"] = sshCommand;
-    }
-
-    static void EnsureGitHubKnownHosts(string knownHostsPath)
-    {
-        try
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(knownHostsPath)!);
-            if (File.Exists(knownHostsPath))
-            {
-                var existing = File.ReadAllText(knownHostsPath);
-                if (existing.Contains("github.com", StringComparison.OrdinalIgnoreCase))
-                    return;
-            }
-
-            var psi = new ProcessStartInfo("ssh-keyscan")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-            };
-            psi.ArgumentList.Add("-t");
-            psi.ArgumentList.Add("ed25519");
-            psi.ArgumentList.Add("github.com");
-            using var process = Process.Start(psi);
-            if (process is null)
-                return;
-
-            var output = process.StandardOutput.ReadToEnd().Trim();
-            process.WaitForExit();
-            if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(output))
-                return;
-
-            File.AppendAllText(knownHostsPath, output + Environment.NewLine);
-        }
-        catch
-        {
-            // Push will surface SSH errors if known_hosts cannot be prepared.
-        }
     }
 
     static string ShellQuote(string value) => "'" + value.Replace("'", "'\\''") + "'";

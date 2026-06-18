@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, systemApi, type ContainerStatus } from "../api";
 
 export function LoadErrorPanel({
@@ -14,6 +14,7 @@ export function LoadErrorPanel({
   const [containers, setContainers] = useState<ContainerStatus[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const containersFetchedRef = useRef(false);
 
   const refreshContainers = useCallback(async () => {
     try {
@@ -24,7 +25,9 @@ export function LoadErrorPanel({
   }, []);
 
   useEffect(() => {
-    refreshContainers();
+    if (containersFetchedRef.current) return;
+    containersFetchedRef.current = true;
+    void refreshContainers();
   }, [refreshContainers]);
 
   const restart = async (role: "kit" | "web" | "sync" | "mirror") => {
@@ -58,7 +61,7 @@ export function LoadErrorPanel({
         {apiErr.status !== undefined && (
           <p className="muted">
             HTTP {apiErr.status}
-            {apiErr.status === 503 && " — usually means HAProxy or the console container could not reach the API backend."}
+            {apiErr.status === 503 && " — backend timed out (Docker may be slow); wait and retry."}
           </p>
         )}
 

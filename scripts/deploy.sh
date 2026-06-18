@@ -37,7 +37,7 @@ if [[ "${1:-}" == "--with-mirror" ]]; then
   bash "$ROOT/scripts/deploy-mirror.sh"
 fi
 
-if deploy_wait_http "$HEALTH_URL" "staging kit web UI" 45; then
+if deploy_wait_http "$HEALTH_URL" "staging kit web UI"; then
   echo ""
   deploy_log "Deploy complete at $(date '+%H:%M:%S')"
   deploy_log "Open: ${OPEN_URL}"

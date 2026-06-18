@@ -14,16 +14,19 @@ if [[ ! -d "$REPO_DIR/.git" ]]; then
   exit 1
 fi
 
-if [[ "${SKIP_GIT_FETCH:-0}" != 1 ]]; then
-  if ! git -C "$REPO_DIR" fetch origin; then
-    log "WARN: git fetch failed — continuing with local repo state (bind-mounted repo may be updated on host)"
+if [[ "${GIT_PULL:-0}" == 1 ]]; then
+  if [[ "${SKIP_GIT_FETCH:-0}" != 1 ]]; then
+    if ! git -C "$REPO_DIR" fetch origin; then
+      log "WARN: git fetch failed — continuing with local repo state"
+    fi
+  fi
+  git -C "$REPO_DIR" checkout "$HA_BRANCH"
+  if ! git -C "$REPO_DIR" pull --ff-only origin "$HA_BRANCH"; then
+    log "WARN: git pull failed — continuing with checked-out branch"
   fi
 else
-  log "Skipping git fetch (SKIP_GIT_FETCH=1)"
-fi
-git -C "$REPO_DIR" checkout "$HA_BRANCH"
-if ! git -C "$REPO_DIR" pull --ff-only origin "$HA_BRANCH"; then
-  log "WARN: git pull failed — continuing with checked-out branch"
+  git -C "$REPO_DIR" checkout "$HA_BRANCH" 2>/dev/null || git -C "$REPO_DIR" checkout -B "$HA_BRANCH"
+  log "Using bind-mounted repo (${HA_BRANCH}) — no git fetch/pull (operator deploy uses local checkout)"
 fi
 
 mkdir -p "$HA_CONFIG/packages"

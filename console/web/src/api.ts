@@ -4,6 +4,139 @@ export type TestResult = { ok: boolean; message: string };
 export type DeployResult = { ok: boolean; message: string; logTail?: string };
 export type OperationResult = { ok: boolean; message: string; logTail?: string | null };
 
+export type EntityDeployRecheckDelta = {
+  resolvedEntityIds: string[];
+  newEntityIds: string[];
+  previousScanAt?: string | null;
+};
+
+export type PreflightProgressSnapshot = {
+  active: boolean;
+  step: number;
+  totalSteps: number;
+  label: string;
+  startedAt: string;
+};
+
+export type ProdStoragePreflightResult = {
+  ok: boolean;
+  entityRefCount: number;
+  blockerCount: number;
+  deferredCount: number;
+  missingEntities: string[];
+  missingEntityIssues: LovelaceMissingEntityIssue[];
+  /** Deferred — kept in dashboard but excluded from deploy gate */
+  deferredEntityIssues: LovelaceMissingEntityIssue[];
+  /** Lovelace resource URLs in git but not on prod */
+  missingCustomCards: string[];
+  issues: string[];
+  /** Local repo fixes done; commit + push needed before deploy gate opens */
+  pendingCommit: boolean;
+  /** Issues still blocking deploy on GitHub main */
+  deployIssueCount: number;
+  /** Resolved in local repo but not yet on GitHub main */
+  fixedLocallyCount: number;
+  recheck?: EntityDeployRecheckDelta | null;
+  canUndoLovelaceFix: boolean;
+  lovelaceUndoDescription?: string | null;
+  z2mConfigIssues: Z2mStaleConfigIssue[];
+  /** Issues still on GitHub main / published bundle (after local draft fixes) */
+  deployMissingEntityIssues: LovelaceMissingEntityIssue[];
+  allowProdRegistryPurge: boolean;
+};
+
+export type Z2mStaleConfigEntry = {
+  ieee: string;
+  friendlyName: string;
+  inStateJson: boolean;
+};
+
+export type Z2mStaleConfigIssue = {
+  expectedFriendlyName: string;
+  liveIeee: string;
+  liveFriendlyName: string;
+  staleEntries: Z2mStaleConfigEntry[];
+  summary: string;
+  fixOptions: LovelaceFixOption[];
+  blocksDeploy: boolean;
+};
+
+export type LovelaceFixOption = {
+  id: string;
+  label: string;
+  action: "remove" | "rename" | string;
+  replacementEntityId?: string | null;
+  description?: string | null;
+};
+
+export type LovelaceEntityReference = {
+  source: string;
+  dashboard?: string | null;
+  view: string;
+  cardType?: string | null;
+  cardTitle?: string | null;
+};
+
+export type LovelaceEntityChoice = {
+  entityId: string;
+  source: "dashboard" | "prod" | string;
+  label: string;
+  hint: string;
+  canApplyInRepo: boolean;
+};
+
+export type ProdRegistryTombstone = {
+  entityId: string;
+  uniqueId?: string | null;
+  platform?: string | null;
+  createdAt?: string | null;
+  label?: string | null;
+};
+
+export type ProdEntityContext = {
+  similarProdEntityId?: string | null;
+  platform?: string | null;
+  deviceName?: string | null;
+  uniqueId?: string | null;
+  integrationHint?: string | null;
+  expectedEntityDeletedOnProd: boolean;
+  deletedRegistryEntityIds?: string[];
+  deletedRegistryTombstones?: ProdRegistryTombstone[];
+  liveDeviceUniquePrefix?: string | null;
+  tombstoneDeviceUniquePrefix?: string | null;
+  tombstoneMatchesLiveDevice?: boolean;
+  /** Prod entity still registered under the dashboard-expected id (explains `_2` suffix). */
+  entityIdOccupiedBy?: string | null;
+  entityIdOccupiedByPlatform?: string | null;
+  entityIdOccupiedByDisabledBy?: string | null;
+  /** Manual prod steps — kit cannot run these during deploy. */
+  prodFixSteps?: string[] | null;
+  prodFixAction?: "suffix-collision" | "registry-rename" | null;
+};
+
+export type LovelaceMissingEntityIssue = {
+  entityId: string;
+  onStaging: boolean;
+  suggestionKind: "rename" | "remove" | "add_on_prod" | "prod_typo" | string;
+  issueClass: "git_wrong_name" | "prod_typo" | "missing_on_prod" | "staging_only" | string;
+  suggestion: string;
+  manualFixSummary: string;
+  suggestedProdEntity?: string | null;
+  prodContext?: ProdEntityContext | null;
+  references: LovelaceEntityReference[];
+  fixOptions: LovelaceFixOption[];
+  entityChoices?: LovelaceEntityChoice[] | null;
+  /** Kit action applied locally (rename/remove) — set on awaiting-publish rows. */
+  awaitingPublishAction?: string | null;
+};
+
+export type LovelaceParityFixResult = {
+  ok: boolean;
+  message: string;
+  filesChanged: string[];
+  changeCount: number;
+};
+
 export type OnboardingStatus = {
   currentStep: number;
   completedSteps: string[];
@@ -81,6 +214,7 @@ export type DashboardStatus = {
   syncLogTail: string[];
   pollHistory: PollHistoryPoint[];
   issues: ComponentIssue[];
+  haIssues: ComponentIssue[];
   liveMetrics?: LiveMetricsSnapshot | null;
   refreshedAt: string;
 };
@@ -203,6 +337,14 @@ export type GitSnapshot = {
   stagingHaChanges?: number | null;
   mainAheadOfProdHa?: number | null;
   mainHaChangesForProdHa?: number | null;
+  mainStorageChangesForProdHa?: number | null;
+  stagingHaFileList?: string[];
+  stagingRepoFileList?: string[];
+  mainHaFileList?: string[];
+  mainStorageFileList?: string[];
+  prodDeployTracked?: boolean;
+  prodLastDeploySha?: string | null;
+  prodPreviousDeploySha?: string | null;
 };
 
 export type PersonSyncSnapshot = {
@@ -245,6 +387,8 @@ export type ConfigDriftStatus = {
   repoCommit?: string | null;
   lastAppliedCommit?: string | null;
   detail: string;
+  applyGapHasHaChanges?: boolean;
+  applyGapHaFileCount?: number;
 };
 
 export type ReadinessItem = {
@@ -358,6 +502,22 @@ export type ComponentIssue = {
   source: string;
   level: "error" | "warn";
   message: string;
+  /** HA config entry domain when sourced from integration diagnostics. */
+  domain?: string | null;
+  entryId?: string | null;
+  reason?: string | null;
+};
+
+export type AppearanceSettingsView = {
+  themeMode: string;
+  badgeColor: string;
+  accentColor: string;
+  density: string;
+  fontScale: string;
+  reduceMotion: boolean;
+  statusIntensity: string;
+  hideNavBadges: boolean;
+  highContrast: boolean;
 };
 
 export type SettingsView = {
@@ -374,6 +534,7 @@ export type SettingsView = {
   };
   stagingHaContainer?: string | null;
   stagingTarget?: StagingTargetSnapshot | null;
+  appearance: AppearanceSettingsView;
 };
 
 export type ContainerStatus = {
@@ -494,6 +655,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const onboardingApi = {
   status: () => api<OnboardingStatus>("/api/onboarding/status"),
+  rescan: () => api<OnboardingStatus>("/api/onboarding/rescan", { method: "POST" }),
   topology: (body: OnboardingStatus["topology"]) =>
     api<OnboardingStatus>("/api/onboarding/topology", { method: "POST", body: JSON.stringify(body) }),
   paths: (body: OnboardingStatus["paths"]) =>
@@ -535,10 +697,15 @@ export const onboardingApi = {
 };
 
 export const dashboardApi = {
+  ping: () => api<{ status: string; service?: string }>("/api/health"),
   status: () => api<DashboardStatus>("/api/dashboard"),
   gitDiff: (path: string) => api<GitFileDiff>(`/api/git/diff?path=${encodeURIComponent(path)}`),
-  gitCommit: (body: { scope: "ha" | "repo"; message?: string | null }) =>
+  stagingDiff: (path: string) => api<GitFileDiff>(`/api/git/staging-diff?path=${encodeURIComponent(path)}`),
+  mainProdDiff: (path: string) => api<GitFileDiff>(`/api/git/main-prod-diff?path=${encodeURIComponent(path)}`),
+  gitCommit: (body: { scope: "ha" | "repo" | "all"; message?: string | null }) =>
     api<OperationResult>("/api/git/commit", { method: "POST", body: JSON.stringify(body) }),
+  gitChangedFiles: () =>
+    api<{ haChangedFiles: string[]; repoChangedFiles: string[] }>("/api/git/changed-files"),
   gitPush: (branch?: string | null) =>
     api<OperationResult>("/api/git/push", {
       method: "POST",
@@ -546,17 +713,37 @@ export const dashboardApi = {
     }),
 };
 
+export type OperationLogEntry = {
+  operation: string;
+  ok: boolean;
+  message: string;
+  logTail?: string | null;
+  when: string;
+};
+
+export type HaLogSnapshot = {
+  instanceLabel: string;
+  source: string;
+  lines: string[];
+};
+
 export type DiagnosticsStatus = {
   subsystems: DashboardStatus["subsystems"];
   issues: ComponentIssue[];
+  haIssues: ComponentIssue[];
   pollHistory: PollHistoryPoint[];
   syncActivity?: SyncActivitySnapshot | null;
   syncLogLines: string[];
   mqttLogLines: string[];
+  prodHaLog: HaLogSnapshot;
+  stagingHaLog: HaLogSnapshot;
   mirrorConfigured: boolean;
   syncLogPath: string;
   mqttLogPath?: string | null;
   refreshedAt: string;
+  operationLog: OperationLogEntry[];
+  stagingHaUrl?: string | null;
+  prodHaUrl?: string | null;
 };
 
 export const diagnosticsApi = {
@@ -565,6 +752,8 @@ export const diagnosticsApi = {
 
 export const settingsApi = {
   get: () => api<SettingsView>("/api/settings"),
+  saveAppearance: (appearance: AppearanceSettingsView) =>
+    api<AppearanceSettingsView>("/api/settings/appearance", { method: "POST", body: JSON.stringify(appearance) }),
   save: (body: SettingsView & {
     prodUrl: string;
     prodToken?: string;
@@ -579,6 +768,7 @@ export const operationsApi = {
   applyConfig: () => api<OperationResult>("/api/operations/apply-config", { method: "POST" }),
   personPoll: () => api<OperationResult>("/api/operations/person-poll", { method: "POST" }),
   storageSync: () => api<OperationResult>("/api/operations/storage-sync", { method: "POST" }),
+  resetWorkbench: () => api<OperationResult>("/api/operations/reset-workbench", { method: "POST" }),
   mirrorReadOnly: () => api<OperationResult>("/api/operations/mirror-mode", { method: "POST", body: JSON.stringify({ controlMode: false }) }),
   mirrorControl: () => api<OperationResult>("/api/operations/mirror-mode", { method: "POST", body: JSON.stringify({ controlMode: true }) }),
   setMirrorMode: (controlMode: boolean) =>
@@ -589,7 +779,42 @@ export const operationsApi = {
   deployMirror: () => api<OperationResult>("/api/operations/deploy-mirror", { method: "POST" }),
   restartStaging: () => api<OperationResult>("/api/operations/restart-staging", { method: "POST" }),
   shipToStaging: () => api<OperationResult>("/api/operations/ship-to-staging", { method: "POST" }),
+  pushToGitHub: () => api<OperationResult>("/api/operations/push-to-github", { method: "POST" }),
+  snapshotFromStaging: () => api<OperationResult>("/api/operations/snapshot-from-staging", { method: "POST" }),
   deployToProd: () => api<OperationResult>("/api/operations/deploy-to-prod", { method: "POST" }),
+  prodStoragePreflight: () => api<ProdStoragePreflightResult>("/api/operations/prod-storage-preflight"),
+  prodStoragePreflightProgress: () =>
+    api<PreflightProgressSnapshot>("/api/operations/prod-storage-preflight/progress"),
+  lovelaceParityFix: (body: { entityId: string; action: string; replacementEntityId?: string | null }) =>
+    api<LovelaceParityFixResult>("/api/operations/lovelace-parity-fix", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  purgeProdDeletedEntities: (entityId: string, similarProdEntityId?: string | null) =>
+    api<OperationResult>("/api/operations/purge-prod-deleted-entities", {
+      method: "POST",
+      body: JSON.stringify({ entityId, similarProdEntityId: similarProdEntityId ?? null }),
+    }),
+  fixProdEntitySuffix: (expectedEntityId: string, suffixProdEntityId: string) =>
+    api<OperationResult>("/api/operations/fix-prod-entity-suffix", {
+      method: "POST",
+      body: JSON.stringify({ expectedEntityId, suffixProdEntityId }),
+    }),
+  fixProdEntityId: (expectedEntityId: string, wrongProdEntityId: string) =>
+    api<OperationResult>("/api/operations/fix-prod-entity-id", {
+      method: "POST",
+      body: JSON.stringify({ expectedEntityId, wrongProdEntityId }),
+    }),
+  fixZ2mConfig: (body: {
+    liveIeee: string;
+    expectedFriendlyName: string;
+    staleIpees?: string[] | null;
+  }) =>
+    api<LovelaceParityFixResult>("/api/operations/fix-z2m-config", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  rollbackProd: () => api<OperationResult>("/api/operations/rollback-prod", { method: "POST" }),
 };
 
 export const systemApi = {

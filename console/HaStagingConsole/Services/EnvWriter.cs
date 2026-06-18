@@ -38,7 +38,7 @@ public sealed class EnvWriter(KitPaths paths)
         {
             "HA_CONFIG_REPO", "HA_STAGING_CONFIG", "SIDECAR_DATA", "MIRROR_DATA",
             "PROD_HA_URL", "HA_SECRETS", "HA_STORAGE", "STAGING_HA_URL", "HA_BRANCH",
-            "PROD_MQTT_HOST", "PROD_MQTT_PORT", "STAGING_MQTT_BROKER", "STAGING_MQTT_PORT", "MIRROR_PORT", "CONSOLE_PORT", "STAGING_HA_CONTAINER"
+            "PROD_MQTT_HOST", "PROD_MQTT_PORT", "STAGING_MQTT_BROKER", "STAGING_MQTT_PORT", "KIT_MQTT_BROKER", "MIRROR_PORT", "CONSOLE_PORT", "STAGING_HA_CONTAINER"
         };
 
         var sb = new StringBuilder();
@@ -86,7 +86,7 @@ public sealed class EnvWriter(KitPaths paths)
         sb.AppendLine($"STAGING_HA_URL={state.Staging.Url}");
         sb.AppendLine($"PERSON_POLL_INTERVAL={poll}");
         sb.AppendLine($"STORAGE_SYNC_INTERVAL={storage}");
-        sb.AppendLine($"APPLY_ON_START={(applyOnStart ? 1 : 0)}");
+        sb.AppendLine($"APPLY_ON_START={(applyOnStart ? "1" : "auto")}");
         sb.AppendLine($"SKIP_STORAGE_SYNC={(skipStorage ? 1 : 0)}");
         sb.AppendLine("SECRETS_DIR=/sidecar-data/secrets");
         sb.AppendLine("SIDECAR_TEMPLATE=/sidecar/templates/packages-sidecar.yaml");

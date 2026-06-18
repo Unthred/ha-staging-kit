@@ -32,10 +32,11 @@ public sealed class SettingsService(
             new SidecarIntervals(
                 int.TryParse(sidecar.GetValueOrDefault("PERSON_POLL_INTERVAL", "60"), out var poll) ? poll : 60,
                 int.TryParse(sidecar.GetValueOrDefault("STORAGE_SYNC_INTERVAL", "86400"), out var storage) ? storage : 86400,
-                sidecar.GetValueOrDefault("APPLY_ON_START", "1") is "1" or "true" or "yes",
+                sidecar.GetValueOrDefault("APPLY_ON_START", "auto") is "1" or "true" or "yes",
                 sidecar.GetValueOrDefault("SKIP_STORAGE_SYNC", "0") is "1" or "true" or "yes"),
             kit.GetValueOrDefault("STAGING_HA_CONTAINER", ""),
-            stagingTargetInfo);
+            stagingTargetInfo,
+            state.Appearance);
     }
 
     public SettingsView Get() => GetAsync(CancellationToken.None).GetAwaiter().GetResult();
@@ -68,5 +69,42 @@ public sealed class SettingsService(
         store.Save(state);
 
         return Get();
+    }
+
+    public AppearanceSettings SaveAppearance(AppearanceSettings appearance)
+    {
+        var state = bootstrap.LoadOrBootstrap();
+        state.Appearance = NormalizeAppearance(appearance);
+        store.Save(state);
+        return state.Appearance;
+    }
+
+    static AppearanceSettings NormalizeAppearance(AppearanceSettings appearance)
+    {
+        var theme = appearance.ThemeMode is "light" or "dark" or "system" ? appearance.ThemeMode : "dark";
+        var badge = NormalizeHex(appearance.BadgeColor, "#ffb74d");
+        var accent = NormalizeHex(appearance.AccentColor, "#03a9f4");
+        var density = appearance.Density is "compact" or "comfortable" ? appearance.Density : "comfortable";
+        var fontScale = appearance.FontScale is "small" or "default" or "large" ? appearance.FontScale : "default";
+        var statusIntensity = appearance.StatusIntensity is "soft" or "default" or "strong"
+            ? appearance.StatusIntensity
+            : "default";
+
+        return appearance with
+        {
+            ThemeMode = theme,
+            BadgeColor = badge,
+            AccentColor = accent,
+            Density = density,
+            FontScale = fontScale,
+            StatusIntensity = statusIntensity,
+        };
+    }
+
+    static string NormalizeHex(string? value, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return fallback;
+        var v = value.Trim();
+        return System.Text.RegularExpressions.Regex.IsMatch(v, "^#[0-9a-fA-F]{6}$") ? v : fallback;
     }
 }

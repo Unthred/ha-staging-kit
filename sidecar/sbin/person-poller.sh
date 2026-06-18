@@ -77,7 +77,7 @@ poll_once() {
     if push_staging_state "$entity" "$filtered"; then
       synced=$((synced + 1))
     else
-      log "WARN: failed staging push for $entity"
+      log "WARN: failed staging push for $entity (staging API rejected — regenerate staging LLAT in kit Settings → Staging)"
     fi
   done
 

@@ -1,5 +1,7 @@
 import type { GitSnapshot, StagingRepresentationStatus } from "../../api";
 import { formatGitChangeSummary, gitSyncLabel } from "../../lib/gitStatus";
+import { prodHaYamlPending } from "../../lib/gitWorkflow";
+import { SectionAttentionBadge } from "../PageAttentionPanel";
 
 function CheckItem({ ok, label, warn }: { ok: boolean; label: string; warn?: boolean }) {
   const tone = ok ? "ok" : warn ? "warn" : "bad";
@@ -17,10 +19,15 @@ export function DashboardParityBanner({
   representation,
   git,
   compact,
+  embedded,
+  attentionOrder,
 }: {
   representation?: StagingRepresentationStatus | null;
   git?: GitSnapshot | null;
   compact?: boolean;
+  /** Render inside the parity table panel (no outer section wrapper). */
+  embedded?: boolean;
+  attentionOrder?: number;
 }) {
   if (!representation?.available) return null;
 
@@ -31,13 +38,18 @@ export function DashboardParityBanner({
   const haGitIssue = representation.issues.find((i) => i.category === "git-ha");
   const repoGitIssue = representation.issues.find((i) => i.category === "git-repo");
 
+  const Tag = embedded ? "div" : "section";
+
   return (
-    <section
-      className={`dash-parity-banner dash-parity-banner-${tone} ${compact ? "dash-parity-banner-compact" : ""}`}
+    <Tag
+      className={`dash-parity-banner dash-parity-banner-${tone} ${compact ? "dash-parity-banner-compact" : ""}${embedded ? " dash-parity-banner-embedded" : ""}`}
       aria-live="polite"
     >
       <div className="dash-parity-banner-main">
-        <h3 className="dash-parity-banner-headline">{representation.headline}</h3>
+        <h3 className="dash-parity-banner-headline">
+          {representation.headline}
+          <SectionAttentionBadge order={attentionOrder} />
+        </h3>
         {!compact && <p className="dash-parity-banner-summary">{representation.summary}</p>}
       </div>
 
@@ -51,29 +63,39 @@ export function DashboardParityBanner({
         )}
         {git?.stagingAheadOfMain != null && (
           <CheckItem
-            ok={git.stagingAheadOfMain === 0}
-            warn={git.stagingAheadOfMain > 0}
+            ok={
+              git.stagingAheadOfMain === 0 &&
+              !(git.isHaDirty ?? false) &&
+              (git.commitsAhead ?? 0) === 0
+            }
+            warn={
+              (git.isHaDirty ?? false) ||
+              (git.commitsAhead ?? 0) > 0 ||
+              git.stagingAheadOfMain > 0
+            }
             label={
-              git.stagingAheadOfMain === 0
-                ? "Staging on main"
-                : (git.stagingHaChanges ?? 0) === 0
-                ? `Merge pending · ${git.stagingAheadOfMain} docs only`
-                : `Deploy needed · ${git.stagingHaChanges} HA file${(git.stagingHaChanges ?? 0) === 1 ? "" : "s"}`
+              (git.isHaDirty ?? false) && (git.haChangedFileCount ?? 0) > 0
+                ? `Commit pending · ${git.haChangedFileCount} HA`
+                : (git.commitsAhead ?? 0) > 0
+                  ? `Push pending · ${git.commitsAhead} commit${git.commitsAhead === 1 ? "" : "s"}`
+                  : git.stagingAheadOfMain === 0
+                    ? "Staging on main"
+                    : (git.stagingHaChanges ?? 0) === 0
+                      ? `Merge pending · ${git.stagingAheadOfMain} docs on GitHub`
+                      : `Merge pending · ${git.stagingHaChanges} HA on GitHub`
             }
           />
         )}
         {git?.configured && (
           <CheckItem
-            ok={git.mainAheadOfProdHa === 0 || (git.mainAheadOfProdHa != null && (git.mainHaChangesForProdHa ?? 0) === 0)}
-            warn={git.mainAheadOfProdHa == null || (git.mainAheadOfProdHa ?? 0) > 0}
+            ok={!prodHaYamlPending(git)}
+            warn={git.prodDeployTracked === false}
             label={
-              git.mainAheadOfProdHa == null
+              git.prodDeployTracked === false
                 ? "Prod HA untracked"
-                : git.mainAheadOfProdHa === 0
-                ? "Prod HA current"
-                : (git.mainHaChangesForProdHa ?? 0) === 0
-                ? "Prod HA current · docs pending"
-                : `Prod HA behind · ${git.mainHaChangesForProdHa} HA file${(git.mainHaChangesForProdHa ?? 0) === 1 ? "" : "s"}`
+                : prodHaYamlPending(git)
+                  ? `Prod HA behind · ${git.mainHaChangesForProdHa} HA file${(git.mainHaChangesForProdHa ?? 0) === 1 ? "" : "s"}`
+                  : "Prod HA current"
             }
           />
         )}
@@ -97,9 +119,11 @@ export function DashboardParityBanner({
 
       {reviewCount > 0 && representation.verdict !== "aligned" && (
         <p className="dash-parity-review-hint muted">
-          {compact ? "Select a row →" : `${reviewCount} item${reviewCount === 1 ? "" : "s"} to review — select a row below.`}
+          {compact || embedded
+            ? "Select a row below →"
+            : `${reviewCount} item${reviewCount === 1 ? "" : "s"} to review — select a row below.`}
         </p>
       )}
-    </section>
+    </Tag>
   );
 }

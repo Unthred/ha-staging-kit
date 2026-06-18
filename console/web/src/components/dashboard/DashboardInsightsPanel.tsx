@@ -1,15 +1,25 @@
 import { Link } from "react-router-dom";
 import type { ComponentIssue } from "../../api";
+import { SectionAttentionBadge } from "../PageAttentionPanel";
 
-export function DashboardInsightsPanel({ issues }: { issues: ComponentIssue[] }) {
+export function DashboardInsightsPanel({
+  issues,
+  attentionCount = 0,
+}: {
+  issues: ComponentIssue[];
+  attentionCount?: number;
+}) {
   const sorted = [...issues].reverse();
 
   return (
-    <section className="dash-panel dash-insights">
+    <section id="diag-insights" className="dash-panel dash-insights">
       <header className="dash-panel-head">
         <div>
           <p className="dash-panel-eyebrow">Insights</p>
-          <h3>{sorted.length === 0 ? "All clear" : `${sorted.length} active signal${sorted.length === 1 ? "" : "s"}`}</h3>
+          <h3>
+            {sorted.length === 0 ? "All clear" : `${sorted.length} active signal${sorted.length === 1 ? "" : "s"}`}
+            <SectionAttentionBadge count={attentionCount} />
+          </h3>
         </div>
         {sorted.length > 0 && (
           <Link to="/diagnostics" className="dash-text-link">

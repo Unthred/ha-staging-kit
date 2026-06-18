@@ -10,7 +10,7 @@ export type ActionToastPreset = {
 
 const presets: Record<string, ActionToastPreset> = {
   "storage-sync": {
-    success: "Prod .storage copied — registries, dashboards, helpers, and MQTT creds are on staging.",
+    success: "Prod .storage copied — registries, Lovelace, helpers, MQTT creds on staging. Auth not touched; MQTT broker patched if mirror enabled.",
     error: "Storage sync face-planted — check SSH to prod and the staging config path.",
     successIcon: "📦",
     errorIcon: "🗄️💥",
@@ -28,10 +28,46 @@ const presets: Record<string, ActionToastPreset> = {
     errorIcon: "📡🫠",
   },
   "apply-config": {
-    success: "Git config applied — staging YAML updated from the repo branch.",
-    error: "Apply config failed — check sync.log and git mount.",
+    success: "Reloaded from repo — staging HA is now running the current git commit.",
+    error: "Reload failed — check sync.log and git mount.",
     successIcon: "🌿",
     errorIcon: "📂💥",
+  },
+  "reset-workbench": {
+    success: "Workbench reset — git matches GitHub, staging re-applied with prod .storage sync.",
+    error: "Workbench reset failed — check sync.log and git mount.",
+    successIcon: "🧹",
+    errorIcon: "🧹💥",
+  },
+  "purge-deleted-entities": {
+    success: "Deleted registry tombstones purged on prod — rename the live entity, then Recheck.",
+    error: "Purge failed — check prod SSH and entity registry backup on prod.",
+    successIcon: "🪦",
+    errorIcon: "🪦💥",
+  },
+  "fix-prod-entity-suffix": {
+    success: "Prod entity id fixed — Recheck the deploy gate, then publish/deploy.",
+    error: "Prod entity id fix failed — registry backup is on prod (.bak-kit-suffix-fix).",
+    successIcon: "📺",
+    errorIcon: "📺💥",
+  },
+  "fix-prod-entity-id": {
+    success: "Prod entity id renamed in registry — Recheck the deploy gate, then publish/deploy.",
+    error: "Prod entity rename failed — registry backup is on prod (.bak-kit-entity-rename).",
+    successIcon: "⏲️",
+    errorIcon: "⏲️💥",
+  },
+  "snapshot-staging": {
+    success: "Imported from staging HA — Lovelace and helpers written to git. Review in parity → Config & git before committing.",
+    error: "Import failed — check that staging HA is running and the config path is mounted.",
+    successIcon: "📸",
+    errorIcon: "📸💥",
+  },
+  "push-github": {
+    success: "Pushed to GitHub — staging branch is now on origin, deploy to prod HA is available.",
+    error: "Push to GitHub failed — check git SSH key and remote URL.",
+    successIcon: "📤",
+    errorIcon: "📡💥",
   },
   "person-poll": {
     success: "Person poll done — prod presence copied to staging.",
@@ -58,9 +94,15 @@ const presets: Record<string, ActionToastPreset> = {
     errorIcon: "🔧💥",
   },
   "deploy-prod": {
-    success: "Deployed to prod — config bundled, applied, and reloaded on HA Green.",
-    error: "Deploy to prod failed — check git merge/push and SSH to prod.",
+    success: "Deployed to prod HA — config bundled, applied, and reloaded.",
+    error: "Deploy to prod HA failed — see Diagnostics for the error log.",
     successIcon: "✅",
+    errorIcon: "🚨",
+  },
+  "rollback-prod": {
+    success: "Prod HA rolled back — previous deploy restored and reloaded.",
+    error: "Prod rollback failed — see Diagnostics for details.",
+    successIcon: "⏪",
     errorIcon: "🚨",
   },
   "mirror-readonly": {

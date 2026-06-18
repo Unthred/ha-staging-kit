@@ -7,9 +7,30 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/common.sh"
 load_config
 
-APPLY_ON_START="${APPLY_ON_START:-1}"
-if [[ "$APPLY_ON_START" == 1 ]]; then
+# auto = apply only on first bootstrap; 1 = always; 0 = never
+APPLY_ON_START="${APPLY_ON_START:-auto}"
+should_apply=0
+case "$APPLY_ON_START" in
+  1|true|yes|always) should_apply=1 ;;
+  0|false|no|never) should_apply=0 ;;
+  auto)
+    if [[ ! -f "${HA_CONFIG}/.staging-initialized" ]]; then
+      should_apply=1
+    fi
+    ;;
+  *)
+    log "WARN: unknown APPLY_ON_START=${APPLY_ON_START} — treating as auto"
+    if [[ ! -f "${HA_CONFIG}/.staging-initialized" ]]; then
+      should_apply=1
+    fi
+    ;;
+esac
+
+if [[ "$should_apply" == 1 ]]; then
+  log "Running apply-config on start (APPLY_ON_START=${APPLY_ON_START})"
   "$SCRIPT_DIR/apply-config.sh" || log "WARN: initial apply failed (will retry on schedule)"
+else
+  log "Skipping apply-config on start (staging already initialized; APPLY_ON_START=${APPLY_ON_START})"
 fi
 
 last_storage_sync=$(date +%s)

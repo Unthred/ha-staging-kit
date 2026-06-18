@@ -1,11 +1,15 @@
-import { useEffect, useState } from "react";
-import { onboardingApi, operationsApi, settingsApi, toApiError, type SettingsView } from "../api";
+import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { onboardingApi, operationsApi, settingsApi, toApiError, type OperationResult, type SettingsView } from "../api";
 import { ActionButton } from "../components/ActionButton";
 import { Chip } from "../components/Chip";
-import { GitWorkflowActions } from "../components/dashboard/GitWorkflowActions";
+import { SectionAttentionBadge } from "../components/PageAttentionPanel";
 import { MirrorControlModeToggle } from "../components/MirrorControlModeToggle";
 import { MqttMirrorInstructions } from "../components/MqttMirrorInstructions";
-import { useDashboardStatus } from "../hooks/useDashboardStatus";
+import { OpsLastResultPanel } from "../components/operations/OpsLastResultPanel";
+import { useNavAttentionContext } from "../context/NavAttentionContext";
+import { useAttentionNavigation } from "../hooks/useAttentionNavigation";
+import { operationsActionOrders, operationsSectionActionCount, type OpsSection } from "../lib/navAttention";
 
 const SECTIONS = [
   {
@@ -43,15 +47,41 @@ function riskLabel(risk: "low" | "medium" | "high") {
 }
 
 export default function OperationsPage() {
+  const [searchParams] = useSearchParams();
   const [sectionId, setSectionId] = useState<SectionId>("config-sync");
   const [gitConfigured, setGitConfigured] = useState(true);
   const [settings, setSettings] = useState<SettingsView | null>(null);
-  const { data: dashboard, refresh: refreshDashboard } = useDashboardStatus(60000);
+  const [lastResult, setLastResult] = useState<OperationResult | null>(null);
+  const { itemsForPath, refresh: refreshAttention } = useNavAttentionContext();
+  const attentionItems = itemsForPath("/operations");
+  const sectionActionCount = (id: SectionId) => operationsSectionActionCount(attentionItems, id as OpsSection);
+  const actionOrders = operationsActionOrders(attentionItems, sectionId as OpsSection);
 
   useEffect(() => {
     onboardingApi.status().then((s) => setGitConfigured(s.gitConfigured)).catch(() => setGitConfigured(false));
     settingsApi.get().then(setSettings).catch((e) => console.warn(toApiError(e).detail));
-  }, [sectionId]);
+  }, []);
+
+  useEffect(() => {
+    const section = searchParams.get("section");
+    if (section && SECTIONS.some((s) => s.id === section)) {
+      setSectionId(section as SectionId);
+    }
+  }, [searchParams]);
+
+  useAttentionNavigation(sectionId);
+
+  const afterOp = useCallback(
+    (result: OperationResult) => {
+      setLastResult(result);
+      window.setTimeout(() => void refreshAttention(), 400);
+    },
+    [refreshAttention],
+  );
+
+  const onOpFailure = useCallback((result: OperationResult) => {
+    setLastResult(result);
+  }, []);
 
   const sectionIndex = SECTIONS.findIndex((s) => s.id === sectionId);
   const current = SECTIONS[Math.max(sectionIndex, 0)] ?? SECTIONS[0];
@@ -61,6 +91,7 @@ export default function OperationsPage() {
   const mirrorEnabled = settings?.mirror.enabled ?? false;
   const mirrorBroker = settings?.mirror.stagingMqttBrokerHost?.trim();
   const mirrorPort = settings?.mirror.stagingMqttPort ?? 1883;
+  const showStorageRestart = Boolean(actionOrders["restart-staging"]);
 
   return (
     <div className="page ops-page">
@@ -80,12 +111,14 @@ export default function OperationsPage() {
               className={`nav-item ${s.id === sectionId ? "active" : ""}`}
               onClick={() => setSectionId(s.id)}
             >
-              {s.title}
+              <span className="ops-nav-label">{s.title}</span>
+              <SectionAttentionBadge count={sectionActionCount(s.id)} />
             </button>
           ))}
         </nav>
 
-        <main className="card main-card">
+        <main className="card main-card" id={`ops-${sectionId}`}>
+          <OpsLastResultPanel result={lastResult} />
           <div className="ops-panel-head">
             <h2>{current.title}</h2>
             <Chip status={riskStatus} label={riskLabel(current.risk)} />
@@ -122,19 +155,20 @@ export default function OperationsPage() {
                   toastPreset="apply-config"
                   onRun={operationsApi.applyConfig}
                   disabled={!gitConfigured}
+                  attentionOrder={actionOrders["apply-config"]}
+                  onDone={afterOp}
+                  onFailure={onOpFailure}
                 />
                 <ActionButton
                   label="Person poll now"
                   toastPreset="person-poll"
                   onRun={operationsApi.personPoll}
                   variant="secondary"
+                  attentionOrder={actionOrders["person-poll"]}
+                  onDone={afterOp}
+                  onFailure={onOpFailure}
                 />
               </div>
-              <GitWorkflowActions
-                git={dashboard?.git}
-                drift={dashboard?.configDrift}
-                onDone={() => void refreshDashboard()}
-              />
             </>
           )}
 
@@ -143,6 +177,10 @@ export default function OperationsPage() {
               <p>
                 Pulls a curated subset of prod <code>.storage</code> into staging over SSH — entity registry, device
                 registry, MQTT credentials (for the mirror), person records, and related images.
+              </p>
+              <p className="muted">
+                <strong>Auth is not copied</strong> — staging keeps its own users and API tokens so the kit token survives
+                sync. See <code>docs/staging-prod-parity-rules.md</code> in the kit repo for the full sync matrix.
               </p>
               <p className="muted warn">
                 Overwrites matching files in staging <code>.storage</code>. Prod copies MQTT broker hostname{" "}
@@ -172,7 +210,25 @@ export default function OperationsPage() {
                 )}
               </ul>
               <div className="step-actions-right ops-actions">
-                <ActionButton label="Run storage sync" toastPreset="storage-sync" onRun={operationsApi.storageSync} />
+                <ActionButton
+                  label="Run storage sync"
+                  toastPreset="storage-sync"
+                  onRun={operationsApi.storageSync}
+                  attentionOrder={actionOrders["storage-sync"]}
+                  onDone={afterOp}
+                  onFailure={onOpFailure}
+                />
+                {showStorageRestart && (
+                  <ActionButton
+                    label="Restart staging HA"
+                    toastPreset="restart-staging"
+                    onRun={operationsApi.restartStaging}
+                    variant="secondary"
+                    attentionOrder={actionOrders["restart-staging"]}
+                    onDone={afterOp}
+                  onFailure={onOpFailure}
+                  />
+                )}
               </div>
             </>
           )}
@@ -206,7 +262,14 @@ export default function OperationsPage() {
                 </>
               )}
               <div className="step-actions-right ops-actions">
-                <ActionButton label="Deploy / refresh mirror" toastPreset="refresh-mirror" onRun={operationsApi.deployMirror} />
+                <ActionButton
+                  label="Deploy / refresh mirror"
+                  toastPreset="refresh-mirror"
+                  onRun={operationsApi.deployMirror}
+                  attentionOrder={actionOrders["deploy-mirror"]}
+                  onDone={afterOp}
+                  onFailure={onOpFailure}
+                />
               </div>
             </>
           )}
@@ -244,7 +307,15 @@ export default function OperationsPage() {
                 <li>Does not restart prod or the kit container itself</li>
               </ul>
               <div className="step-actions-right ops-actions">
-                <ActionButton label="Restart staging HA" toastPreset="restart-staging" onRun={operationsApi.restartStaging} variant="secondary" />
+                <ActionButton
+                  label="Restart staging HA"
+                  toastPreset="restart-staging"
+                  onRun={operationsApi.restartStaging}
+                  variant="secondary"
+                  attentionOrder={actionOrders["restart-staging"]}
+                  onDone={afterOp}
+                  onFailure={onOpFailure}
+                />
               </div>
             </>
           )}

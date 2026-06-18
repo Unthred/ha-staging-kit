@@ -4,7 +4,8 @@ namespace HaStagingConsole.Services;
 
 /// <summary>
 /// Derives MQTT mirror endpoints from prod/staging URLs, topology, and kit .env.
-/// Mosquitto runs inside the kit container; staging HA needs the host IP where MIRROR_PORT is published.
+/// Mosquitto runs inside the kit container; staging HA needs the host where MIRROR_PORT is published.
+/// HA URLs may use split-DNS FQDNs (HAProxy); MQTT broker host must reach port 1883 on the kit host directly.
 /// </summary>
 public sealed class MirrorEndpointResolver(KitPaths paths)
 {
@@ -49,7 +50,12 @@ public sealed class MirrorEndpointResolver(KitPaths paths)
         if (!string.IsNullOrWhiteSpace(configured))
             return configured;
 
-        return PreferLanHost(HostFromHttpUrl(prodUrl));
+        var urlHost = HostFromHttpUrl(prodUrl);
+        if (IsIpAddress(urlHost) && !IsLocalHostHost(urlHost) && !IsLikelyContainerBridgeIp(urlHost))
+            return urlHost;
+
+        // FQDN HA URLs go through HAProxy; prod Mosquitto is on the HA host — set PROD_MQTT_HOST explicitly.
+        return null;
     }
 
     static (string? Broker, int Port) ResolveStagingMqttBroker(
@@ -62,26 +68,36 @@ public sealed class MirrorEndpointResolver(KitPaths paths)
             FirstNonEmpty(env.GetValueOrDefault("STAGING_MQTT_PORT"), env.GetValueOrDefault("MIRROR_PORT")),
             1883);
 
+        var explicitBroker = FirstNonEmpty(
+            sidecar.GetValueOrDefault("STAGING_MQTT_BROKER"),
+            env.GetValueOrDefault("STAGING_MQTT_BROKER"),
+            env.GetValueOrDefault("KIT_MQTT_BROKER"),
+            hostEnv.GetValueOrDefault("KIT_MQTT_BROKER"));
+        if (!string.IsNullOrWhiteSpace(explicitBroker))
+            return (explicitBroker.Trim(), port);
+
         var kitLan = FirstNonEmpty(
             hostEnv.GetValueOrDefault("KIT_LAN_IP"),
             env.GetValueOrDefault("KIT_LAN_IP"),
             hostEnv.GetValueOrDefault("KIT_HOST_IP"),
             env.GetValueOrDefault("KIT_HOST_IP"));
 
-        var stagingUrlHost = PreferLanHost(
+        // When staging HA URL uses a LAN IP, staging and kit often share that host.
+        var stagingUrlHost = FirstNonEmpty(
             HostFromHttpUrl(state.Staging.Url),
             HostFromHttpUrl(sidecar.GetValueOrDefault("STAGING_HA_URL")),
             HostFromHttpUrl(env.GetValueOrDefault("STAGING_HA_URL")));
+        var brokerFromStagingUrl = IsIpAddress(stagingUrlHost) && !IsLocalHostHost(stagingUrlHost)
+            ? stagingUrlHost
+            : null;
 
-        // Same-host Docker: staging reaches the kit broker via the host LAN IP (published MIRROR_PORT).
         if (state.Topology.SameHostAsKit)
         {
-            var broker = FirstNonEmpty(stagingUrlHost, kitLan, DetectKitLanIp());
+            var broker = FirstNonEmpty(kitLan, brokerFromStagingUrl, DetectKitLanIp());
             return (broker, port);
         }
 
-        // Remote staging: kit broker is still on the kit host — prefer explicit KIT_LAN_IP, else staging URL if it points at kit.
-        var remoteBroker = FirstNonEmpty(kitLan, stagingUrlHost, DetectKitLanIp());
+        var remoteBroker = FirstNonEmpty(kitLan, DetectKitLanIp());
         return (remoteBroker, port);
     }
 
@@ -140,11 +156,25 @@ public sealed class MirrorEndpointResolver(KitPaths paths)
         {
             if (string.IsNullOrWhiteSpace(host) || IsLocalHostHost(host) || IsLikelyContainerBridgeIp(host))
                 continue;
+            if (IsDnsHostname(host))
+                return host.Trim();
+        }
+
+        foreach (var host in hosts)
+        {
+            if (string.IsNullOrWhiteSpace(host) || IsLocalHostHost(host) || IsLikelyContainerBridgeIp(host))
+                continue;
             return host.Trim();
         }
 
         return null;
     }
+
+    static bool IsDnsHostname(string? host) =>
+        !string.IsNullOrWhiteSpace(host) && !IsIpAddress(host);
+
+    static bool IsIpAddress(string? host) =>
+        !string.IsNullOrWhiteSpace(host) && System.Net.IPAddress.TryParse(host, out _);
 
     static bool IsLocalHostHost(string? host) =>
         host is "127.0.0.1" or "localhost" or "::1";

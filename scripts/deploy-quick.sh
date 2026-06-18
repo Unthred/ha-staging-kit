@@ -63,10 +63,9 @@ deploy_ui() {
 
   copy_to_container "$WEB/dist" "/app/wwwroot"
 
-  deploy_log "Restarting ${KIT_CONTAINER} (sync loop + web; ~10–20s downtime)…"
-  docker restart "$KIT_CONTAINER" >/dev/null
-
-  deploy_wait_http "$HEALTH_URL" "staging kit web UI" 45
+  deploy_verify_ui_marker "$KIT_CONTAINER" "$WEB/dist/index.html"
+  deploy_log "UI updated in place — skipping container restart (static files served from disk)"
+  deploy_wait_http "$HEALTH_URL" "staging kit web UI" 15
 }
 
 deploy_api() {
@@ -104,10 +103,9 @@ deploy_api() {
   deploy_log "Copying publish output → ${KIT_CONTAINER}:/app/"
   copy_to_container "$CACHE_DIR/publish" "/app"
 
-  deploy_log "Restarting ${KIT_CONTAINER}…"
-  docker restart "$KIT_CONTAINER" >/dev/null
-
-  deploy_wait_http "$HEALTH_URL" "staging kit web UI" 45
+  deploy_sync_entrypoint "$KIT_CONTAINER" "$ROOT/docker/entrypoint.sh"
+  deploy_restart_container "$KIT_CONTAINER"
+  deploy_wait_http "$HEALTH_URL" "staging kit web UI"
 }
 
 deploy_sidecar() {
@@ -155,7 +153,7 @@ Examples:
 EOF
     ;;
   *)
-    deploy_log "Unknown mode: $MODE (use ui, api, or full)"
+    deploy_log "Unknown mode: $MODE (use sidecar, ui, api, or full)"
     exit 1
     ;;
 esac

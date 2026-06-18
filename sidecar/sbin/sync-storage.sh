@@ -8,12 +8,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/common.sh"
 load_config
 
-# Instance id must differ between prod and staging.
+# Instance id must differ between prod and staging for HA Cloud; local staging may share core.config.
+# Auth is NOT synced — staging keeps its own users/tokens (kit LLAT, UI login). See docs/staging-prod-parity-rules.md.
 # `counter` is NOT synced: prod counters clash with sidecar_generated.yaml log counters.
 STORAGE_INCLUDES=(
   onboarding
-  auth
-  auth_provider.homeassistant
   core.config_entries
   core.entity_registry
   core.device_registry
@@ -28,7 +27,6 @@ STORAGE_INCLUDES=(
   person
   zone
   http
-  http.auth
   repairs.issue_registry
   timer
   input_boolean
@@ -53,6 +51,7 @@ for name in "${STORAGE_INCLUDES[@]}"; do
 done
 
 log "Rsync .storage from prod (${#STORAGE_INCLUDES[@]} files)"
+"$SCRIPT_DIR/preserve-staging-oauth-entries.sh" backup
 rsync -av \
   -e "$HA_SSH" \
   --rsync-path="sudo rsync" \
@@ -72,8 +71,12 @@ rsync -av \
   "${HA_STORAGE%.storage/}image/" \
   "$HA_CONFIG/image/"
 
-log "Storage sync complete"
+log "Storage sync complete (auth excluded — staging API tokens preserved; see docs/staging-prod-parity-rules.md)"
 
 if ! "$SCRIPT_DIR/patch-staging-storage.sh"; then
   log "WARN: staging storage patch failed — MQTT broker may still point at prod"
+fi
+
+if ! "$SCRIPT_DIR/preserve-staging-oauth-entries.sh" restore; then
+  log "WARN: staging OAuth preserve restore failed — cloud integrations may need re-auth"
 fi

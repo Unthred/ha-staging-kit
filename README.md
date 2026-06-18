@@ -25,13 +25,15 @@ cp config.example.env .env
 bash scripts/init-data-dirs.sh
 # Add $SIDECAR_DATA/secrets/*.token and id_ed25519 — see docs/setup.md
 
+# First time only — builds the image and creates the container:
 bash scripts/deploy.sh                 # one image: web + sync
 bash scripts/deploy.sh --with-mirror   # + MQTT mirror config
 
-# Faster redeploys after the first full build:
-bash scripts/deploy-quick.sh ui        # React/UI only (~1–2 min)
+# After that — prefer quick deploy (see docs/setup.md):
+bash scripts/deploy-quick.sh sidecar   # sidecar shell scripts only (~10s)
 bash scripts/deploy-quick.sh api       # C# API only (~2–3 min)
-bash scripts/deploy-quick.sh full      # same as deploy.sh (~5–8 min)
+bash scripts/deploy-quick.sh ui        # React/UI only (~1–2 min)
+bash scripts/deploy-quick.sh full      # same as deploy.sh — avoid unless needed
 
 docker exec ha-staging-kit /sidecar/sbin/apply-config.sh
 docker exec ha-staging-kit tail -f /sidecar-data/sync.log

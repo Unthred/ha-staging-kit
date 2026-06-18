@@ -1,11 +1,13 @@
+using System.Diagnostics;
 using HaStagingConsole.Models;
 
 namespace HaStagingConsole.Services;
 
 /// <summary>Runs sidecar scripts and internal processes inside the kit container (no docker exec).</summary>
-public sealed class SidecarRunner
+public sealed class SidecarRunner(ILogger<SidecarRunner> logger)
 {
     const string SyncPattern = "sidecar/sbin/run.sh";
+    static readonly TimeSpan BashTimeout = TimeSpan.FromSeconds(5);
 
     public Task<(bool Ok, string Message)> RunScriptAsync(string script, CancellationToken ct) =>
         RunBashAsync(script, ct);
@@ -38,6 +40,7 @@ public sealed class SidecarRunner
 
     public async Task<(bool Ok, string Message)> RestartSyncLoopAsync(CancellationToken ct)
     {
+        logger.LogInformation("Restarting config sync loop");
         await RunBashAsync("pkill -f 'sidecar/sbin/run.sh' 2>/dev/null || true", ct);
         await Task.Delay(500, ct);
         return await RunBashAsync("/sidecar/sbin/run.sh >> /sidecar-data/sync.log 2>&1 &", ct);
@@ -53,6 +56,7 @@ public sealed class SidecarRunner
         if (!File.Exists(cfg))
             return (false, "Mirror not configured — run deploy mirror first");
 
+        logger.LogInformation("Restarting MQTT mirror");
         await RunBashAsync("pkill -x mosquitto 2>/dev/null || true", ct);
         await Task.Delay(500, ct);
         var logDir = Path.Combine(mirrorData, "log");
@@ -66,9 +70,32 @@ public sealed class SidecarRunner
     public Task<string> SyncLogTailAsync(int lines, CancellationToken ct) =>
         ReadTailAsync("/sidecar-data/sync.log", lines, ct);
 
-    static async Task<(bool Ok, string Message)> RunBashAsync(string command, CancellationToken ct)
+    public async Task AppendSyncLogAsync(string text, CancellationToken ct)
     {
-        var psi = new System.Diagnostics.ProcessStartInfo("bash")
+        if (string.IsNullOrWhiteSpace(text))
+            return;
+
+        var path = "/sidecar-data/sync.log";
+        await using var writer = new StreamWriter(path, append: true);
+        foreach (var raw in text.Split('\n'))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0)
+                continue;
+
+            if (line.StartsWith('['))
+                await writer.WriteLineAsync(line);
+            else
+                await writer.WriteLineAsync($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] ha-staging-kit-sync: {line}");
+        }
+    }
+
+    async Task<(bool Ok, string Message)> RunBashAsync(string command, CancellationToken ct)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(BashTimeout);
+
+        var psi = new ProcessStartInfo("bash")
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -77,25 +104,40 @@ public sealed class SidecarRunner
         psi.ArgumentList.Add("-lc");
         psi.ArgumentList.Add(command);
 
-        using var proc = System.Diagnostics.Process.Start(psi);
-        if (proc is null)
-            return (false, "Failed to start bash");
-        var stdout = await proc.StandardOutput.ReadToEndAsync(ct);
-        var stderr = await proc.StandardError.ReadToEndAsync(ct);
-        await proc.WaitForExitAsync(ct);
-        var msg = string.IsNullOrWhiteSpace(stdout) ? stderr.Trim() : stdout.Trim();
-        if (msg.Length > 4000)
-            msg = msg[^4000..];
-        return (proc.ExitCode == 0, string.IsNullOrWhiteSpace(msg) ? $"exit {proc.ExitCode}" : msg);
+        Process? proc = null;
+        try
+        {
+            proc = Process.Start(psi);
+            if (proc is null)
+                return (false, "Failed to start bash");
+
+            var stdout = await proc.StandardOutput.ReadToEndAsync(timeoutCts.Token);
+            var stderr = await proc.StandardError.ReadToEndAsync(timeoutCts.Token);
+            await proc.WaitForExitAsync(timeoutCts.Token);
+            var msg = string.IsNullOrWhiteSpace(stdout) ? stderr.Trim() : stdout.Trim();
+            if (msg.Length > 4000)
+                msg = msg[^4000..];
+            return (proc.ExitCode == 0, string.IsNullOrWhiteSpace(msg) ? $"exit {proc.ExitCode}" : msg);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            TryKillProcess(proc);
+            logger.LogWarning("Sidecar bash command timed out after {TimeoutSeconds}s", BashTimeout.TotalSeconds);
+            return (false, $"Command timed out after {BashTimeout.TotalSeconds:F0}s");
+        }
+        catch (Exception ex)
+        {
+            TryKillProcess(proc);
+            logger.LogError(ex, "Sidecar bash command failed");
+            return (false, ex.Message);
+        }
     }
 
-    static async Task<bool> IsProcessRunningAsync(string pattern, CancellationToken ct)
+    async Task<bool> IsProcessRunningAsync(string pattern, CancellationToken ct)
     {
         string script;
         if (pattern.Contains("mosquitto", StringComparison.Ordinal))
-        {
             script = "pgrep -x mosquitto >/dev/null 2>&1 && echo yes || echo no";
-        }
         else
         {
             script =
@@ -108,12 +150,42 @@ public sealed class SidecarRunner
         return ok && msg.Contains("yes", StringComparison.Ordinal);
     }
 
-    static async Task<string> ReadTailAsync(string file, int lines, CancellationToken ct)
+    async Task<string> ReadTailAsync(string file, int lines, CancellationToken ct)
     {
         if (!File.Exists(file))
             return "";
-        var (ok, msg) = await RunBashAsync($"tail -n {lines} {Quote(file)} 2>/dev/null", ct);
-        return ok ? msg : "";
+
+        return await Task.Run(() => ReadFileTailLines(file, lines), ct);
+    }
+
+    static string ReadFileTailLines(string path, int maxLines)
+    {
+        var tail = new Queue<string>(maxLines);
+        foreach (var raw in File.ReadLines(path))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0)
+                continue;
+            tail.Enqueue(line);
+            if (tail.Count > maxLines)
+                tail.Dequeue();
+        }
+
+        return string.Join('\n', tail);
+    }
+
+    static void TryKillProcess(Process? proc)
+    {
+        if (proc is null || proc.HasExited)
+            return;
+        try
+        {
+            proc.Kill(entireProcessTree: true);
+        }
+        catch
+        {
+            /* best effort */
+        }
     }
 
     static string Quote(string value) => "'" + value.Replace("'", "'\\''") + "'";

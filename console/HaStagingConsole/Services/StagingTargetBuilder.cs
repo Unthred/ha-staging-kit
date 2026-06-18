@@ -7,13 +7,19 @@ namespace HaStagingConsole.Services;
 public sealed class StagingTargetBuilder(
     KitPaths paths,
     IHttpClientFactory httpClientFactory,
-    DockerRunner docker)
+    DockerRunner docker,
+    StartupGuard startup)
 {
     static readonly string[] SupervisorPaths = ["/api/supervisor/info", "/api/hassio/info"];
 
     // Supervisor availability doesn't change during a session — cache indefinitely once known.
     bool? _supervisorAvailableCache;
     string? _supervisorCacheUrl;
+
+    // Config probe (version, locationName, configDir) rarely changes — cache for 60 seconds.
+    ConfigProbeResult? _configProbeCache;
+    string? _configProbeCacheUrl;
+    DateTimeOffset _configProbeCacheExpiry;
 
     public async Task<StagingTargetSnapshot> BuildAsync(
         OnboardingState state,
@@ -36,7 +42,7 @@ public sealed class StagingTargetBuilder(
         var probeUrl = FirstNonEmpty(url, tokenUrl);
         if (!string.IsNullOrWhiteSpace(probeUrl) && !string.IsNullOrWhiteSpace(token))
         {
-            var configProbe = await ProbeConfigAsync(probeUrl, token, ct);
+            var configProbe = await GetCachedConfigProbeAsync(probeUrl, token, ct);
             apiReachable = configProbe.Reachable;
             version = configProbe.Version;
             locationName = configProbe.LocationName;
@@ -45,7 +51,7 @@ public sealed class StagingTargetBuilder(
         }
 
         var containerRunning = false;
-        if (!string.IsNullOrWhiteSpace(container))
+        if (!string.IsNullOrWhiteSpace(container) && !startup.IsWarmingUp)
             containerRunning = await docker.IsContainerRunningAsync(container, ct);
 
         var installType = ResolveInstallType(supervisorAvailable, state.Topology.StagingHaType, container);
@@ -124,12 +130,27 @@ public sealed class StagingTargetBuilder(
 
     sealed record ConfigProbeResult(bool Reachable, string? Version, string? LocationName, string? ConfigDir);
 
+    async Task<ConfigProbeResult> GetCachedConfigProbeAsync(string url, string token, CancellationToken ct)
+    {
+        if (_configProbeCacheUrl == url
+            && _configProbeCache is not null
+            && DateTimeOffset.UtcNow < _configProbeCacheExpiry)
+        {
+            return _configProbeCache;
+        }
+        var result = await ProbeConfigAsync(url, token, ct);
+        _configProbeCache = result;
+        _configProbeCacheUrl = url;
+        _configProbeCacheExpiry = DateTimeOffset.UtcNow.AddSeconds(60);
+        return result;
+    }
+
     async Task<ConfigProbeResult> ProbeConfigAsync(string url, string token, CancellationToken ct)
     {
         try
         {
             var client = httpClientFactory.CreateClient();
-            client.Timeout = TimeSpan.FromSeconds(12);
+            client.Timeout = TimeSpan.FromSeconds(5);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
             using var response = await client.GetAsync($"{url.TrimEnd('/')}/api/config", ct);
             if (!response.IsSuccessStatusCode)
@@ -168,7 +189,7 @@ public sealed class StagingTargetBuilder(
     async Task<bool> ProbeSupervisorAsync(string url, string token, CancellationToken ct)
     {
         var client = httpClientFactory.CreateClient();
-        client.Timeout = TimeSpan.FromSeconds(8);
+        client.Timeout = TimeSpan.FromSeconds(5);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
         foreach (var path in SupervisorPaths)

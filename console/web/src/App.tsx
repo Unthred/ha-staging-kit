@@ -15,21 +15,53 @@ function RequireOnboarding({ children }: { children: ReactNode }) {
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const location = useLocation();
 
-  const check = () => {
+  useEffect(() => {
+    let cancelled = false;
     setLoadError(null);
-    setComplete(null);
     onboardingApi
       .status()
-      .then((s) => setComplete(s.isComplete))
-      .catch((e) => setLoadError(toApiError(e)));
-  };
+      .then((s) => {
+        if (!cancelled) setComplete(s.isComplete);
+      })
+      .catch((e) => {
+        if (!cancelled) setLoadError(toApiError(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
-    check();
-  }, [location.pathname]);
+    if (complete === null) return;
+    let cancelled = false;
+    onboardingApi
+      .status()
+      .then((s) => {
+        if (!cancelled) setComplete(s.isComplete);
+      })
+      .catch(() => {
+        /* Keep the current shell mounted on transient errors during navigation. */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [location.pathname, complete]);
 
   if (loadError) {
-    return <LoadErrorPanel title="Staging console" error={loadError} onRetry={check} />;
+    return (
+      <LoadErrorPanel
+        title="Staging console"
+        error={loadError}
+        onRetry={() => {
+          setLoadError(null);
+          setComplete(null);
+          onboardingApi
+            .status()
+            .then((s) => setComplete(s.isComplete))
+            .catch((e) => setLoadError(toApiError(e)));
+        }}
+      />
+    );
   }
 
   if (complete === null) return <div className="shell"><div className="card">Loading…</div></div>;

@@ -1,14 +1,17 @@
 import { Link } from "react-router-dom";
 import type { SuggestedAction } from "../../api";
 import { ActionButton } from "../ActionButton";
+import { SectionAttentionBadge } from "../PageAttentionPanel";
 import { operationsApi } from "../../api";
 
 export function DashboardSuggestedAction({
   action,
   onDone,
+  attentionOrder,
 }: {
   action: SuggestedAction;
   onDone?: () => void;
+  attentionOrder?: number;
 }) {
   const severity = action.severity ?? "info";
 
@@ -38,7 +41,10 @@ export function DashboardSuggestedAction({
         <p className="dash-panel-eyebrow">
           {severity === "critical" ? "Needs attention now" : severity === "warning" ? "Suggested fix" : "Heads up"}
         </p>
-        <h3>{action.title}</h3>
+        <h3>
+          {action.title}
+          <SectionAttentionBadge order={attentionOrder} />
+        </h3>
         <p className="muted">{action.detail}</p>
       </div>
       <div className="dash-suggested-actions ops-actions">

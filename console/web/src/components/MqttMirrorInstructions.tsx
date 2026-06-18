@@ -9,13 +9,17 @@ export function MqttMirrorInstructions({
 }) {
   const isDocker = stagingHaType === "docker";
   const isHaOs = stagingHaType === "ha_os";
-  const hostHint = brokerHost?.trim() || "kit host (derived from staging HA URL)";
+  const hostHint = brokerHost?.trim() || "kit host (set STAGING_MQTT_BROKER or KIT_MQTT_BROKER in kit config)";
 
   return (
     <>
       <p className="muted">
         The kit runs Mosquitto on port <code>{brokerPort}</code> inside the same container. Staging HA connects to{" "}
-        <code>{hostHint}</code> — configured automatically from your URLs and re-applied after storage sync.
+        <code>{hostHint}</code> — configured automatically from kit config and re-applied after storage sync.
+      </p>
+      <p className="muted">
+        MQTT uses port <code>{brokerPort}</code> on the <strong>kit Docker host</strong>, not the HAProxy HTTPS frontends
+        (<code>ha-staging-kit.yeradonkey.com</code> etc.). Use a hostname that resolves directly to that host, or the LAN IP.
       </p>
       <p className="muted">
         This is <strong>not</strong> Settings → Apps{isDocker && " (Apps are HA OS only)"}. Use{" "}

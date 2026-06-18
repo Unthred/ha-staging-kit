@@ -10,6 +10,8 @@ Manual steps below if you prefer the CLI path or need to troubleshoot.
 
 For **person / presence sync** (prod read + staging write tokens), see [person-presence-sync.md](person-presence-sync.md).
 
+For **entity deploy scan** (Lovelace entity refs vs prod before deploy; git-only deploy, no prod entity renames), see [design-entity-deploy-scan.md](design-entity-deploy-scan.md).
+
 ## Before you start
 
 - [ ] Docker + Docker Compose v2
@@ -54,13 +56,27 @@ Create (mode 600):
 
 See `sidecar/secrets/*.token.example`.
 
-## 3. Deploy sidecar
+## 3. Deploy kit
+
+**First install** — full build (once):
 
 ```bash
 bash scripts/deploy.sh
-docker exec ha-staging-sidecar /sidecar/sbin/apply-config.sh
-docker exec ha-staging-sidecar /sidecar/sbin/person-poller.sh --once
+docker exec ha-staging-kit /sidecar/sbin/apply-config.sh
+docker exec ha-staging-kit /sidecar/sbin/person-poller.sh --once
 ```
+
+**Later changes** — quick deploy (preferred):
+
+| Changed | Command |
+|---------|---------|
+| `sidecar/sbin/*.sh` | `bash scripts/deploy-quick.sh sidecar` |
+| C# console | `bash scripts/deploy-quick.sh api` |
+| React UI | `bash scripts/deploy-quick.sh ui` |
+
+On Unraid: `bash /boot/config/scripts/ha-staging-kit-deploy-quick.sh api`
+
+Full `deploy.sh` only when Dockerfile, compose volumes/ports, or the container is missing.
 
 ## 4. MQTT mirror (optional)
 
@@ -70,7 +86,7 @@ If yes:
 
 1. Complete storage sync first (mirror reads MQTT creds from staging `.storage`):
    ```bash
-   docker exec ha-staging-sidecar /sidecar/sbin/sync-storage.sh
+   docker exec ha-staging-kit /sidecar/sbin/sync-storage.sh
    ```
 2. Deploy mirror:
    ```bash
@@ -84,8 +100,8 @@ Mirror defaults to **read-only**. Control mode is for hands-on testing only.
 ## 5. Verify
 
 ```bash
-docker ps | grep -E 'sidecar|mosquitto'
-docker exec ha-staging-sidecar /sidecar/sbin/person-poller.sh --once
+docker ps | grep ha-staging-kit
+docker exec ha-staging-kit /sidecar/sbin/person-poller.sh --once
 bash scripts/mirror-control-mode.sh status   # if mirror enabled
 ```
 

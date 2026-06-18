@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { dashboardApi, toApiError, type GitSnapshot } from "../../api";
+import { dashboardApi, toApiError, type GitFileDiff, type GitSnapshot } from "../../api";
+import { resolveGitChangedFileLists } from "../../lib/gitChangedFiles";
 import { diffHunkCount, parseDiffSections } from "../../lib/parseDiffHunks";
 
 function DiffView({ diff, activeHunkIndex }: { diff: string; activeHunkIndex: number }) {
@@ -100,11 +101,28 @@ export function GitUncommittedFilesDialog({
   open,
   onClose,
   onCommitted,
+  title,
+  subtitle,
+  readOnly,
+  overrideHaFiles,
+  overrideRepoFiles,
+  fetchDiff,
 }: {
   git?: GitSnapshot | null;
   open: boolean;
   onClose: () => void;
   onCommitted?: () => void;
+  /** Override the dialog title (default: "Uncommitted files") */
+  title?: string;
+  /** Override the subtitle/hint text */
+  subtitle?: string;
+  /** When true, hides the commit footer */
+  readOnly?: boolean;
+  /** Supply file lists directly instead of computing from git snapshot */
+  overrideHaFiles?: string[];
+  overrideRepoFiles?: string[];
+  /** Custom diff-fetch function; defaults to dashboardApi.gitDiff (working tree vs HEAD) */
+  fetchDiff?: (path: string) => Promise<GitFileDiff>;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -114,8 +132,19 @@ export function GitUncommittedFilesDialog({
   const [diffBusy, setDiffBusy] = useState(false);
   const [diffError, setDiffError] = useState<string | null>(null);
   const [commitMessage, setCommitMessage] = useState("");
-  const [commitBusy, setCommitBusy] = useState<"ha" | "repo" | null>(null);
+  const [commitBusy, setCommitBusy] = useState<"ha" | "repo" | "all" | null>(null);
   const [commitFeedback, setCommitFeedback] = useState<{ tone: "ok" | "err"; message: string } | null>(null);
+  const [fetchedLists, setFetchedLists] = useState<{ haFiles: string[]; repoFiles: string[] } | null>(null);
+  const [fetchListsError, setFetchListsError] = useState<string | null>(null);
+
+  const resolvedFromGit = useMemo(() => resolveGitChangedFileLists(git), [git]);
+  const haOverride =
+    overrideHaFiles && overrideHaFiles.length > 0 ? overrideHaFiles : undefined;
+  const repoOverride =
+    overrideRepoFiles && overrideRepoFiles.length > 0 ? overrideRepoFiles : undefined;
+  const haFiles = haOverride ?? fetchedLists?.haFiles ?? resolvedFromGit.haFiles;
+  const repoFiles = repoOverride ?? fetchedLists?.repoFiles ?? resolvedFromGit.repoFiles;
+  const allFiles = useMemo(() => [...haFiles, ...repoFiles], [haFiles, repoFiles]);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -123,6 +152,38 @@ export function GitUncommittedFilesDialog({
     if (open && !dialog.open) dialog.showModal();
     if (!open && dialog.open) dialog.close();
   }, [open]);
+
+  useEffect(() => {
+    if (!open) {
+      setFetchedLists(null);
+      setFetchListsError(null);
+      return;
+    }
+
+    if (haOverride || repoOverride) return;
+    if (allFiles.length > 0) return;
+    if (!git?.isDirty && !readOnly) return;
+
+    let cancelled = false;
+    void dashboardApi
+      .gitChangedFiles()
+      .then((result) => {
+        if (cancelled) return;
+        setFetchedLists({
+          haFiles: result.haChangedFiles ?? [],
+          repoFiles: result.repoChangedFiles ?? [],
+        });
+        setFetchListsError(null);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setFetchListsError(toApiError(e).detail);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [allFiles.length, git?.isDirty, haOverride, open, readOnly, repoOverride]);
 
   useEffect(() => {
     if (!open) {
@@ -143,8 +204,9 @@ export function GitUncommittedFilesDialog({
     setDiffBusy(true);
     setDiffError(null);
     setDiff(null);
+    const doFetch = fetchDiff ?? dashboardApi.gitDiff;
     try {
-      const result = await dashboardApi.gitDiff(path);
+      const result = await doFetch(path);
       setDiff(result.diff);
       setDiffStatus(result.status);
       const count = diffHunkCount(result.diff);
@@ -157,11 +219,8 @@ export function GitUncommittedFilesDialog({
     } finally {
       setDiffBusy(false);
     }
-  }, []);
+  }, [fetchDiff]);
 
-  const haFiles = git?.haChangedFiles ?? git?.haChangedSample ?? [];
-  const repoFiles = git?.repoChangedFiles ?? git?.repoChangedSample ?? [];
-  const allFiles = useMemo(() => [...haFiles, ...repoFiles], [haFiles, repoFiles]);
   const selectedIndex = selectedPath ? allFiles.indexOf(selectedPath) : -1;
   const hunkCount = diffHunkCount(diff);
 
@@ -200,7 +259,7 @@ export function GitUncommittedFilesDialog({
     (selectedIndex < 0 && allFiles.length > 0);
 
   const commitScope = useCallback(
-    async (scope: "ha" | "repo") => {
+    async (scope: "ha" | "repo" | "all") => {
       setCommitBusy(scope);
       setCommitFeedback(null);
       try {
@@ -212,11 +271,17 @@ export function GitUncommittedFilesDialog({
           setCommitFeedback({ tone: "ok", message: result.message });
           setCommitMessage("");
           onCommitted?.();
-          if (scope === "ha" && selectedPath && !haFiles.includes(selectedPath)) {
-            setSelectedPath(null);
-            setDiff(null);
+          if (scope !== "all" && selectedPath) {
+            if (scope === "ha" && !haFiles.includes(selectedPath)) {
+              setSelectedPath(null);
+              setDiff(null);
+            }
+            if (scope === "repo" && !repoFiles.includes(selectedPath)) {
+              setSelectedPath(null);
+              setDiff(null);
+            }
           }
-          if (scope === "repo" && selectedPath && !repoFiles.includes(selectedPath)) {
+          if (scope === "all") {
             setSelectedPath(null);
             setDiff(null);
           }
@@ -233,6 +298,8 @@ export function GitUncommittedFilesDialog({
     [commitMessage, haFiles, onCommitted, repoFiles, selectedPath],
   );
 
+  const totalPending = haFiles.length + repoFiles.length;
+
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (e: KeyboardEvent) => {
@@ -248,7 +315,12 @@ export function GitUncommittedFilesDialog({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [goToChange, open]);
 
-  if (!git?.configured) return null;
+  useEffect(() => {
+    if (!open || allFiles.length === 0 || selectedPath !== null) return;
+    void loadDiff(allFiles[0], 0);
+  }, [allFiles, loadDiff, open, selectedPath]);
+
+  if (!readOnly && !git?.configured) return null;
 
   return (
     <dialog
@@ -265,9 +337,9 @@ export function GitUncommittedFilesDialog({
       <div className="dash-git-files-dialog-panel" onClick={(e) => e.stopPropagation()}>
         <header className="dash-git-files-dialog-head">
           <div>
-            <h3>Uncommitted files</h3>
+            <h3>{title ?? "Uncommitted files"}</h3>
             <p className="muted">
-              Step through each change with Previous/Next · commit HA YAML and docs separately
+              {subtitle ?? "Step through each change with Previous/Next · commit HA YAML and docs separately"}
             </p>
           </div>
           <button type="button" className="btn secondary dash-git-files-close" onClick={onClose} aria-label="Close">
@@ -275,65 +347,91 @@ export function GitUncommittedFilesDialog({
           </button>
         </header>
 
-        <div className="dash-git-files-dialog-body">
-          <FileList title="HA YAML" tone="ha" files={haFiles} selectedPath={selectedPath} onSelect={(p) => void loadDiff(p, 0)} />
-          <FileList
-            title="Docs / repo"
-            tone="repo"
-            files={repoFiles}
-            selectedPath={selectedPath}
-            onSelect={(p) => void loadDiff(p, 0)}
-          />
+        <div className="dash-git-files-dialog-main">
+          <aside className="dash-git-files-dialog-sidebar" aria-label="Changed files">
+            <div className="dash-git-files-dialog-body">
+              {haFiles.length > 0 && (
+                <FileList
+                  title="HA YAML"
+                  tone="ha"
+                  files={haFiles}
+                  selectedPath={selectedPath}
+                  onSelect={(p) => void loadDiff(p, 0)}
+                />
+              )}
+              {repoFiles.length > 0 && (
+                <FileList
+                  title="Docs / repo"
+                  tone="repo"
+                  files={repoFiles}
+                  selectedPath={selectedPath}
+                  onSelect={(p) => void loadDiff(p, 0)}
+                />
+              )}
+              {allFiles.length === 0 && (
+                <p className="muted dash-git-files-empty">
+                  {fetchListsError ?? (git?.isDirty ? "Loading changed files…" : "No files to review.")}
+                </p>
+              )}
+            </div>
+          </aside>
+
+          <section className="dash-git-diff-panel" aria-live="polite">
+            {allFiles.length === 0 && (
+              <p className="muted dash-git-diff-placeholder">No changed files in this view.</p>
+            )}
+            {allFiles.length > 0 && !selectedPath && diffBusy && (
+              <p className="muted dash-git-diff-placeholder">Loading first file…</p>
+            )}
+            {selectedPath && diffBusy && (
+              <p className="muted dash-git-diff-placeholder">Loading diff for {selectedPath}…</p>
+            )}
+            {selectedPath && diffError && !diffBusy && <p className="dash-git-diff-error">{diffError}</p>}
+            {selectedPath && !diffBusy && (
+              <>
+                <header className="dash-git-diff-head">
+                  <div className="dash-git-diff-head-main">
+                    <code>{selectedPath}</code>
+                    {diffStatus && <span className="dash-badge dash-badge-info">{diffStatus}</span>}
+                    {hunkCount > 0 && (
+                      <span className="muted dash-git-diff-position">
+                        Change {selectedHunkIndex + 1} of {hunkCount}
+                      </span>
+                    )}
+                    {selectedIndex >= 0 && (
+                      <span className="muted dash-git-diff-position">
+                        File {selectedIndex + 1} of {allFiles.length}
+                      </span>
+                    )}
+                  </div>
+                  {allFiles.length > 0 && (
+                    <div className="dash-git-diff-nav">
+                      <button
+                        type="button"
+                        className="btn secondary dash-git-diff-nav-btn"
+                        disabled={!canGoPrev}
+                        onClick={() => goToChange(-1)}
+                      >
+                        Previous change
+                      </button>
+                      <button
+                        type="button"
+                        className="btn secondary dash-git-diff-nav-btn"
+                        disabled={!canGoNext}
+                        onClick={() => goToChange(1)}
+                      >
+                        Next change
+                      </button>
+                    </div>
+                  )}
+                </header>
+                {diff && <DiffView diff={diff} activeHunkIndex={selectedHunkIndex} />}
+              </>
+            )}
+          </section>
         </div>
 
-        <section className="dash-git-diff-panel" aria-live="polite">
-          {!selectedPath && <p className="muted dash-git-diff-placeholder">Select a file above to view changes vs git HEAD.</p>}
-          {selectedPath && diffBusy && <p className="muted dash-git-diff-placeholder">Loading diff for {selectedPath}…</p>}
-          {selectedPath && diffError && !diffBusy && <p className="dash-git-diff-error">{diffError}</p>}
-          {selectedPath && !diffBusy && (
-            <>
-              <header className="dash-git-diff-head">
-                <div className="dash-git-diff-head-main">
-                  <code>{selectedPath}</code>
-                  {diffStatus && <span className="dash-badge dash-badge-info">{diffStatus}</span>}
-                  {hunkCount > 0 && (
-                    <span className="muted dash-git-diff-position">
-                      Change {selectedHunkIndex + 1} of {hunkCount}
-                    </span>
-                  )}
-                  {selectedIndex >= 0 && (
-                    <span className="muted dash-git-diff-position">
-                      File {selectedIndex + 1} of {allFiles.length}
-                    </span>
-                  )}
-                </div>
-                {allFiles.length > 0 && (
-                  <div className="dash-git-diff-nav">
-                    <button
-                      type="button"
-                      className="btn secondary dash-git-diff-nav-btn"
-                      disabled={!canGoPrev}
-                      onClick={() => goToChange(-1)}
-                    >
-                      Previous change
-                    </button>
-                    <button
-                      type="button"
-                      className="btn secondary dash-git-diff-nav-btn"
-                      disabled={!canGoNext}
-                      onClick={() => goToChange(1)}
-                    >
-                      Next change
-                    </button>
-                  </div>
-                )}
-              </header>
-              {diff && <DiffView diff={diff} activeHunkIndex={selectedHunkIndex} />}
-            </>
-          )}
-        </section>
-
-        {(git.isHaDirty || git.isRepoDirty) && (
+        {!readOnly && (git?.isHaDirty || git?.isRepoDirty) && (
           <footer className="dash-git-commit-bar">
             {commitFeedback && (
               <p className={`dash-git-commit-feedback dash-git-commit-feedback-${commitFeedback.tone}`} role="status">
@@ -351,24 +449,34 @@ export function GitUncommittedFilesDialog({
               />
             </label>
             <div className="dash-git-commit-actions">
-              {git.isHaDirty && (
+              {totalPending > 0 && (git?.isHaDirty || git?.isRepoDirty) && (
                 <button
                   type="button"
-                  className="btn dash-git-commit-btn-ha"
+                  className="btn dash-git-commit-btn-all"
+                  disabled={commitBusy !== null}
+                  onClick={() => void commitScope("all")}
+                >
+                  {commitBusy === "all" ? "Committing…" : `Commit all ${totalPending} file${totalPending === 1 ? "" : "s"}`}
+                </button>
+              )}
+              {git?.isHaDirty && haFiles.length > 0 && (
+                <button
+                  type="button"
+                  className="btn secondary dash-git-commit-btn-ha"
                   disabled={commitBusy !== null}
                   onClick={() => void commitScope("ha")}
                 >
-                  {commitBusy === "ha" ? "Committing…" : `Commit ${git.haChangedFileCount} HA YAML`}
+                  {commitBusy === "ha" ? "Committing…" : `HA only (${git.haChangedFileCount})`}
                 </button>
               )}
-              {git.isRepoDirty && (
+              {git?.isRepoDirty && repoFiles.length > 0 && (
                 <button
                   type="button"
                   className="btn secondary dash-git-commit-btn-repo"
                   disabled={commitBusy !== null}
                   onClick={() => void commitScope("repo")}
                 >
-                  {commitBusy === "repo" ? "Committing…" : `Commit ${git.repoChangedFileCount} docs/repo`}
+                  {commitBusy === "repo" ? "Committing…" : `Docs only (${git?.repoChangedFileCount ?? 0})`}
                 </button>
               )}
             </div>

@@ -1,9 +1,10 @@
 import type {
   AutomationActivitySnapshot,
-  BridgeUptimeSnapshot,
+  ComponentIssue,
   HaReachabilitySnapshot,
   LiveMetricsSnapshot,
 } from "../../api";
+import { DashboardHaHealthSummary } from "./DashboardHaHealthSummary";
 import { mirrorModeLabel } from "../../lib/mirrorMode";
 import { formatGitLiveChangeSummary, gitSyncLabel } from "../../lib/gitStatus";
 
@@ -148,38 +149,6 @@ function DualSparkline({
   );
 }
 
-function BridgeChart({ bridge }: { bridge: BridgeUptimeSnapshot }) {
-  const points = bridge.buckets.length > 0 ? bridge.buckets : bridge.pollHistory.map((p) => ({ at: p.at, connected: p.connected }));
-  if (points.length === 0) {
-    return <p className="muted dash-live-chart-empty">No bridge history yet.</p>;
-  }
-
-  const width = 280;
-  const height = 72;
-  const barW = Math.max(6, Math.floor(width / points.length) - 4);
-
-  return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="dash-sparkline-svg" role="img" aria-label="MQTT bridge uptime">
-      {points.map((point, i) => {
-        const h = point.connected ? height - 10 : 6;
-        const y = point.connected ? 4 : height - h - 4;
-        const x = i * (barW + 4) + 2;
-        return (
-          <rect
-            key={`${point.at}-${i}`}
-            x={x}
-            y={y}
-            width={barW}
-            height={h}
-            rx={3}
-            className={point.connected ? "dash-spark-bar-ok" : "dash-spark-bar-warn"}
-          />
-        );
-      })}
-    </svg>
-  );
-}
-
 function AutomationChart({ automation }: { automation: AutomationActivitySnapshot }) {
   const buckets = automation.prodBuckets.length >= automation.stagingBuckets.length ? automation.prodBuckets : automation.stagingBuckets;
   if (buckets.length === 0) {
@@ -223,12 +192,22 @@ function AutomationChart({ automation }: { automation: AutomationActivitySnapsho
   );
 }
 
-export function DashboardLiveMetrics({ metrics }: { metrics?: LiveMetricsSnapshot | null }) {
+export function DashboardLiveMetrics({
+  metrics,
+  haIssues = [],
+  haAttentionCount = 0,
+  haAttentionOrder,
+}: {
+  metrics?: LiveMetricsSnapshot | null;
+  haIssues?: ComponentIssue[];
+  haAttentionCount?: number;
+  haAttentionOrder?: number;
+}) {
   if (!metrics) return null;
 
-  const { status, reachability, bridge, automation } = metrics;
+  const { status, reachability, automation } = metrics;
   const hasChips = status.git || status.mirror || status.staging;
-  const hasCharts = reachability.available || bridge?.available || automation?.available;
+  const hasCharts = reachability.available || automation?.available || haIssues.length >= 0;
   if (!hasChips && !hasCharts) return null;
 
   return (
@@ -266,18 +245,12 @@ export function DashboardLiveMetrics({ metrics }: { metrics?: LiveMetricsSnapsho
             </article>
           )}
 
-          {bridge?.available && (
-            <article className="dash-panel dash-live-chart-panel">
-              <header className="dash-panel-head dash-panel-head-tight">
-                <h3>Bridge uptime</h3>
-                <span className={`dash-badge ${bridge.connected ? "dash-badge-ok" : "dash-badge-warn"}`}>
-                  {bridge.connected ? "Up" : "Down"}
-                </span>
-              </header>
-              <BridgeChart bridge={bridge} />
-              <p className="muted dash-live-chart-meta">Last hour · 5 min buckets from mirror log</p>
-            </article>
-          )}
+          <DashboardHaHealthSummary
+            issues={haIssues}
+            attentionCount={haAttentionCount}
+            attentionOrder={haAttentionOrder}
+            variant="chart"
+          />
 
           {automation?.available && (
             <article className="dash-panel dash-live-chart-panel">

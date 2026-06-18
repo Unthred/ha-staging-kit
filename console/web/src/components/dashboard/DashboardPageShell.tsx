@@ -17,8 +17,8 @@ export function DashboardPageShell({
   title: string;
   subtitle?: string;
   data?: DashboardStatus | null;
-  busy: boolean;
-  onRefresh: () => void;
+  busy?: boolean;
+  onRefresh?: () => void;
   compact?: boolean;
   children: ReactNode;
 }) {
@@ -36,7 +36,7 @@ export function DashboardPageShell({
         onRefresh={onRefresh}
       />
 
-      {!data?.onboardingComplete && (
+      {data != null && !data.onboardingComplete && (
         <div className="dash-banner dash-banner-warn">
           Setup incomplete — <Link to="/onboarding">resume the wizard</Link>
         </div>

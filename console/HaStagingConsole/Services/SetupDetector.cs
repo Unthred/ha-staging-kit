@@ -7,22 +7,61 @@ public sealed class SetupDetector(
     KitPaths paths,
     DockerRunner docker,
     IHttpClientFactory httpClientFactory,
-    MirrorEndpointResolver mirrorEndpoints)
+    MirrorEndpointResolver mirrorEndpoints,
+    ILogger<SetupDetector> logger)
 {
     static readonly string[] SupervisorPaths = ["/api/supervisor/info", "/api/hassio/info"];
+    static readonly TimeSpan DetectionCacheTtl = TimeSpan.FromMinutes(5);
 
     bool? _supervisorCacheProd;
     bool? _supervisorCacheStaging;
+    DetectedSetupSnapshot? _detectionCache;
+    DateTimeOffset _detectionCacheAt;
+
+    public void InvalidateCache()
+    {
+        _detectionCache = null;
+        logger.LogInformation("Setup detection cache invalidated");
+    }
 
     public async Task<(DetectedSetupSnapshot Detected, bool StateChanged)> DetectAndMergeAsync(
         OnboardingState state,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool forceRefresh = false)
     {
-        var detected = await DetectAsync(state, ct);
+        DetectedSetupSnapshot detected;
+        if (!forceRefresh && TryGetCachedDetection(out var cached))
+        {
+            logger.LogDebug(
+                "Setup detection cache hit (age {AgeSeconds:F0}s)",
+                (DateTimeOffset.UtcNow - _detectionCacheAt).TotalSeconds);
+            detected = cached;
+        }
+        else
+        {
+            logger.LogInformation("Running full setup detection (forceRefresh={ForceRefresh})", forceRefresh);
+            detected = await DetectAsync(state, ct);
+            _detectionCache = detected;
+            _detectionCacheAt = DateTimeOffset.UtcNow;
+        }
+
         var changed = MergeIntoState(state, detected);
         if (mirrorEndpoints.ApplyIfEnabled(state))
             changed = true;
         return (detected, changed);
+    }
+
+    bool TryGetCachedDetection(out DetectedSetupSnapshot snapshot)
+    {
+        if (_detectionCache is not null
+            && DateTimeOffset.UtcNow - _detectionCacheAt < DetectionCacheTtl)
+        {
+            snapshot = _detectionCache;
+            return true;
+        }
+
+        snapshot = null!;
+        return false;
     }
 
     public async Task<DetectedSetupSnapshot> DetectAsync(OnboardingState state, CancellationToken ct)
@@ -381,10 +420,10 @@ public sealed class SetupDetector(
             return null;
         }
 
-        var names = await ListHomeAssistantContainerNamesAsync(ct);
+        var names = await docker.ListHomeAssistantContainerNamesAsync(ct);
         foreach (var name in names)
         {
-            var mounts = await GetContainerMountSourcesAsync(name, ct);
+            var mounts = await docker.GetContainerMountSourcesAsync(name, ct);
             if (mounts.Any(m => PathsMatch(m, normalizedConfig)))
             {
                 sources["stagingHaContainer"] = $"Docker mount match ({name})";
@@ -445,81 +484,6 @@ public sealed class SetupDetector(
         }
 
         return false;
-    }
-
-    async Task<IReadOnlyList<string>> ListHomeAssistantContainerNamesAsync(CancellationToken ct)
-    {
-        var psi = new System.Diagnostics.ProcessStartInfo("docker")
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false
-        };
-        psi.ArgumentList.Add("ps");
-        psi.ArgumentList.Add("-a");
-        psi.ArgumentList.Add("--format");
-        psi.ArgumentList.Add("{{.Names}}\t{{.Image}}");
-
-        using var proc = System.Diagnostics.Process.Start(psi);
-        if (proc is null)
-            return [];
-
-        var stdout = await proc.StandardOutput.ReadToEndAsync(ct);
-        await proc.WaitForExitAsync(ct);
-        if (proc.ExitCode != 0)
-            return [];
-
-        return stdout
-            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(line =>
-            {
-                var parts = line.Split('\t', 2);
-                return parts.Length == 2 && parts[1].Contains("home-assistant", StringComparison.OrdinalIgnoreCase)
-                    ? parts[0]
-                    : null;
-            })
-            .Where(n => !string.IsNullOrWhiteSpace(n))
-            .Cast<string>()
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-    }
-
-    async Task<IReadOnlyList<string>> GetContainerMountSourcesAsync(string container, CancellationToken ct)
-    {
-        var psi = new System.Diagnostics.ProcessStartInfo("docker")
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false
-        };
-        psi.ArgumentList.Add("inspect");
-        psi.ArgumentList.Add("-f");
-        psi.ArgumentList.Add("{{range .Mounts}}{{.Source}}\n{{end}}");
-        psi.ArgumentList.Add(container);
-
-        using var proc = System.Diagnostics.Process.Start(psi);
-        if (proc is null)
-            return [];
-
-        var stdout = await proc.StandardOutput.ReadToEndAsync(ct);
-        await proc.WaitForExitAsync(ct);
-        if (proc.ExitCode != 0)
-            return [];
-
-        var results = new List<string>();
-        foreach (var line in stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            try
-            {
-                results.Add(Path.GetFullPath(line));
-            }
-            catch
-            {
-                results.Add(line);
-            }
-        }
-
-        return results;
     }
 
     static bool PathsMatch(string mountSource, string stagingConfigPath)

@@ -39,7 +39,7 @@ Create long-lived tokens in each HA instance (Settings → Security → Long-Liv
 
 | File | Line 1 | Line 2 |
 |------|--------|--------|
-| `$SIDECAR_DATA/secrets/ha-prod-api.token` | Prod URL, e.g. `http://192.168.1.10:8123` | Prod token (**read** — person/tracker states) |
+| `$SIDECAR_DATA/secrets/ha-prod-api.token` | Prod URL, e.g. `https://home.yeradonkey.com` | Prod token (**read** — person/tracker states) |
 | `$SIDECAR_DATA/secrets/ha-staging-api.token` | Staging URL | Staging token (**write** — update states) |
 
 See `sidecar/secrets/*.token.example`. Mode **600** on all secret files.
@@ -82,6 +82,7 @@ First-run **onboarding** and day-two **Operations → Person poll now** will liv
 | States never update | Wrong prod URL/token; network | Test prod URL from sidecar container; regenerate read token |
 | Staging states revert | Staging HA or integration overwriting | Poller runs continuously — check for conflicting automations |
 | Person photo missing | Images not synced | Run `sync-storage.sh` (includes `image/` and `.storage/person`) |
+| `401` on staging API after storage sync | Legacy: prod `auth` was copied (fixed — auth no longer synced) | Regenerate staging LLAT in kit **Settings → Staging** once; future syncs preserve auth |
 
 ## Security notes
 
