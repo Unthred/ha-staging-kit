@@ -208,7 +208,7 @@ static class LovelaceEntityAnalysis
             "Click **Fix entity id on prod** below (stops prod HA briefly, edits core.entity_registry, restarts).",
             uiNote,
             $"Registry rename: `{wrongProdEntityId}` → `{expectedEntityId}` (unique_id `{prodEntry.UniqueId}` unchanged).",
-            "Click Recheck in the deploy gate — the blocker should clear once prod matches.",
+            "Click Recheck in Entity Janitor — the blocker should clear once prod matches.",
             "Publish and deploy the dashboard bundle from the ship wizard.",
         ];
     }
@@ -233,7 +233,7 @@ static class LovelaceEntityAnalysis
             $"Or manually: delete {blockerNote} in Settings → Entities.",
             $"Then rename {liveNote} → `{expectedEntityId}` on prod.",
             "Search prod automations/scripts for the old `_2` id and update references if needed.",
-            "Click Recheck in this deploy gate — the blocker should clear once prod matches.",
+            "Click Recheck in Entity Janitor — the blocker should clear once prod matches.",
             "Publish and deploy the dashboard bundle from the ship wizard.",
         ];
     }
@@ -284,7 +284,7 @@ static class LovelaceEntityAnalysis
                     "Defer for later",
                     "defer",
                     null,
-                    "Exclude from the deploy gate — cards may error on prod until you fix manually."));
+                    "Exclude from Entity Janitor — cards may error on prod until you fix manually."));
                 options.Add(new LovelaceFixOption(
                     "remove",
                     "Remove from dashboard",
@@ -304,7 +304,7 @@ static class LovelaceEntityAnalysis
                     "Defer for later",
                     "defer",
                     null,
-                    "Exclude from the deploy gate — cards may error on prod until fixed."));
+                    "Exclude from Entity Janitor — cards may error on prod until fixed."));
                 options.Add(new LovelaceFixOption(
                     "remove",
                     "Remove from dashboard",

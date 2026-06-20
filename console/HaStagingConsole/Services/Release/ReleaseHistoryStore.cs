@@ -123,6 +123,16 @@ public sealed class ReleaseHistoryStore(KitPaths paths)
             ?? doc.Releases.LastOrDefault();
     }
 
+    /// <summary>Clears release history and sets prod deploy tracker to the new baseline commit.</summary>
+    public void ResetForBaseline(string sha)
+    {
+        var normalized = sha.Trim();
+        Directory.CreateDirectory(paths.SidecarData);
+        File.WriteAllText(paths.LastProdDeployShaFile, normalized);
+        File.WriteAllText(paths.LastProdDeployPreviousShaFile, normalized);
+        SaveHistory(new ReleaseHistoryDocument(null, [], 0));
+    }
+
     void SyncCompatShaFiles(ReleaseHistoryDocument doc)
     {
         var current = doc.Releases.LastOrDefault(r => r.Index == doc.CurrentIndex) ?? doc.Releases.LastOrDefault();

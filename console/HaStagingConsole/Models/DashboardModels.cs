@@ -20,6 +20,7 @@ public sealed record DashboardStatus(
     HaMonitoringStats? StagingMonitoring,
     EntityParitySnapshot? EntityParity,
     StagingRepresentationStatus? StagingRepresentation,
+    LovelaceDriftStatus? LovelaceDrift,
     MqttBridgeStats? MqttBridge,
     IReadOnlyList<string> SyncLogTail,
     IReadOnlyList<PollHistoryPoint> PollHistory,
@@ -174,7 +175,16 @@ public sealed record GitSnapshotStatus(
     IReadOnlyList<string> MainStorageFileList,
     bool ProdDeployTracked = false,
     string? ProdLastDeploySha = null,
-    string? ProdPreviousDeploySha = null);
+    string? ProdPreviousDeploySha = null,
+    IReadOnlyList<GitUnpushedCommitPreview>? UnpushedCommits = null,
+    IReadOnlyList<string>? UnpushedHaFiles = null,
+    IReadOnlyList<string>? UnpushedRepoFiles = null,
+    string? UnpushedRemoteRef = null);
+
+public sealed record GitUnpushedCommitPreview(
+    string ShortSha,
+    string Subject,
+    DateTimeOffset? CommittedAt);
 
 public sealed record GitFileDiffResult(string Path, string Status, string Diff);
 
@@ -230,7 +240,8 @@ public sealed record ConfigInventoryStats(
     int AutomationCount,
     int ScriptCount,
     int PackageCount,
-    int BlueprintCount);
+    int BlueprintCount,
+    AutomationGitGapSnapshot? AutomationGitGap = null);
 
 public sealed record HaMonitoringStats(
     bool Available,
@@ -253,6 +264,43 @@ public sealed record EntityParitySnapshot(
     IReadOnlyList<string> ExpectedStagingOnlySample,
     IReadOnlyList<EntityDomainParity> Domains);
 
+public sealed record AutomationGitGapSnapshot(
+    bool Available,
+    int GitAutomationCount,
+    int HaAutomationCount,
+    int MissingFromGitCount,
+    IReadOnlyList<AutomationGitGapRow> MissingFromGit);
+
+public sealed record AutomationGitGapRow(
+    string Id,
+    string EntityId,
+    string Alias,
+    string Detail);
+
+public sealed record EntityParityDetailSnapshot(
+    bool Available,
+    string Domain,
+    int ProdOnlyCount,
+    int StagingOnlyCount,
+    IReadOnlyList<EntityParityDetailRow> ProdOnly,
+    IReadOnlyList<EntityParityDetailRow> StagingOnly,
+    IReadOnlyList<EntityParityCategorySummary> ProdOnlyCategories);
+
+public sealed record EntityParityDetailRow(
+    string EntityId,
+    string Category,
+    string Reason,
+    string? Platform,
+    string? ProdState,
+    string? StagingState,
+    bool InStagingRegistry,
+    bool OrphanedOnStaging);
+
+public sealed record EntityParityCategorySummary(
+    string Category,
+    string Label,
+    int Count);
+
 public sealed record EntityDomainParity(
     string Domain,
     int ProdOnlyCount,
@@ -269,6 +317,7 @@ public sealed record StagingRepresentationStatus(
     string Summary,
     bool ConfigMatchesGit,
     bool EntityRegistryAligned,
+    bool LovelaceAligned,
     bool PresenceMatches,
     bool GitClean,
     IReadOnlyList<RepresentationIssue> Issues);
@@ -279,6 +328,16 @@ public sealed record RepresentationIssue(
     string Title,
     string Detail,
     IReadOnlyList<string> Samples);
+
+public sealed record LovelaceDriftStatus(
+    bool Available,
+    bool StagingDiffersFromRepo,
+    bool StagingDiffersFromProd,
+    string? StagingTitle,
+    string? RepoTitle,
+    string? ProdTitle,
+    IReadOnlyList<string> ChangedPaths,
+    string Detail);
 
 public sealed record MqttBridgeStats(
     bool Available,
@@ -412,6 +471,19 @@ public sealed record ProdStoragePreflightResult(
     bool AllowProdRegistryPurge,
     IReadOnlyList<ProdEntityNamingIssue> ProdNamingIssues);
 
+/// <summary>Release/deploy gate — blocks only on issues newly introduced since baseline.</summary>
+public sealed record ProdStorageDeployGateResult(
+    bool Ok,
+    int DeltaBlockerCount,
+    int PreExistingMissingCount,
+    int NewEntityRefCount,
+    int RemovedEntityRefCount,
+    IReadOnlyList<string> MissingEntities,
+    IReadOnlyList<LovelaceMissingEntityIssue> MissingEntityIssues,
+    IReadOnlyList<string> MissingCustomCards,
+    IReadOnlyList<Z2mStaleConfigIssue> Z2mConfigIssues,
+    IReadOnlyList<string> Issues);
+
 public sealed record LovelaceParityFixRequest(
     string EntityId,
     string Action,
@@ -452,11 +524,13 @@ public sealed record DiagnosticsStatus(
     IReadOnlyList<PollHistoryPoint> PollHistory,
     SyncActivitySnapshot? SyncActivity,
     IReadOnlyList<string> SyncLogLines,
+    IReadOnlyList<string> PersonPollLogLines,
     IReadOnlyList<string> MqttLogLines,
     HaLogSnapshot ProdHaLog,
     HaLogSnapshot StagingHaLog,
     bool MirrorConfigured,
     string SyncLogPath,
+    string PersonPollLogPath,
     string? MqttLogPath,
     DateTimeOffset RefreshedAt,
     IReadOnlyList<OperationLogEntry> OperationLog,

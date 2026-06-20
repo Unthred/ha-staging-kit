@@ -1,9 +1,14 @@
 import { Link, useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
 import type { ConfigDriftStatus, GitSnapshot } from "../../api";
 import { operationsApi, releaseAgentApi } from "../../api";
 import { ActionButton } from "../ActionButton";
 import { SectionAttentionBadge } from "../PageAttentionPanel";
 import { useDeployFlow, type DeployFlowModel } from "../../hooks/useDeployFlow";
+import { impactLevelClass, impactLevelLabel } from "../../lib/releaseImpact";
+import { ReleaseConfirmDialog } from "./ReleaseConfirmDialog";
+import { useToast } from "../Toast";
+import { actionToast } from "../../lib/toastMessages";
 
 export function DeployFlowGateHint({
   flow,
@@ -16,27 +21,94 @@ export function DeployFlowGateHint({
 
   let detail: string;
   if (flow.gateStatus.busy) {
-    detail = "Scanning prod entities…";
+    detail = "Checking Entity Janitor for this release…";
   } else if (flow.gateStatus.ok === false && flow.gateStatus.missingEntityCount > 0) {
-    detail = `${flow.gateStatus.missingEntityCount} deploy blocker${flow.gateStatus.missingEntityCount === 1 ? "" : "s"} on prod — export migrations and clear blockers before release.`;
+    detail = `${flow.gateStatus.missingEntityCount} new blocker${flow.gateStatus.missingEntityCount === 1 ? "" : "s"} introduced by this release — fix before shipping.`;
   } else if (flow.gateStatus.ok === false) {
-    detail = "Entity deploy scan failed — review blockers before release.";
+    detail = "Entity Janitor failed — review new blockers before release.";
+  } else if ((flow.deployGate?.preExistingMissingCount ?? 0) > 0) {
+    detail = `${flow.deployGate!.preExistingMissingCount} pre-existing entity mismatch(es) in git Lovelace — not blocking this release. Clean up in Operations when ready.`;
   } else {
-    detail = "Entity deploy scan required before Lovelace or Zigbee2MQTT changes can ship.";
+    detail = "Entity Janitor check for this release.";
   }
 
   return (
     <div id="deploy-lovelace-gate" className="deploy-flow-gate-hint dash-panel">
       <div className="deploy-flow-gate-hint-body">
         <p className="deploy-flow-gate-hint-title">
-          Entity deploy gate
+          Entity Janitor
           <SectionAttentionBadge order={attentionOrder} />
         </p>
         <p className="deploy-flow-gate-hint-text">{detail}</p>
       </div>
       <Link to="/operations?section=entity-deploy" className="btn secondary btn-compact">
-        Open entity deploy gate
+        Open Entity Janitor
       </Link>
+    </div>
+  );
+}
+
+export function DeployFlowImpactPreview({
+  flow,
+  attentionOrder,
+}: {
+  flow: DeployFlowModel;
+  attentionOrder?: number;
+}) {
+  if (!flow.impactPreviewVisible) return null;
+
+  const impact = flow.impactPreview;
+  const busy = flow.impactBusy && !impact;
+
+  return (
+    <div id="release-impact-preview" className={`deploy-flow-impact dash-panel ${impact ? impactLevelClass(impact.impactLevel) : ""}`}>
+      <div className="deploy-flow-impact-head">
+        <p className="deploy-flow-impact-title">
+          Release impact
+          <SectionAttentionBadge order={attentionOrder} />
+        </p>
+        {impact && (
+          <span className={`dash-badge deploy-flow-impact-badge deploy-flow-impact-badge--${impact.impactLevel}`}>
+            {impactLevelLabel(impact.impactLevel)}
+          </span>
+        )}
+      </div>
+      {busy ? (
+        <p className="deploy-flow-impact-text muted">Checking what this release would change on prod…</p>
+      ) : impact ? (
+        <>
+          <p className="deploy-flow-impact-summary">{impact.summary}</p>
+          {impact.blockers.length > 0 && (
+            <div className="deploy-flow-impact-section">
+              <p className="deploy-flow-impact-section-title">Known breakages — release blocked</p>
+              <ul className="deploy-flow-impact-list">
+                {impact.blockers.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {impact.warnings.length > 0 && (
+            <div className="deploy-flow-impact-section">
+              <p className="deploy-flow-impact-section-title">
+                {impact.blocksRelease ? "Additional notes" : "Review before confirming"}
+              </p>
+              <ul className="deploy-flow-impact-list">
+                {impact.warnings.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {impact.requiresConfirm && !impact.blocksRelease && (
+            <p className="deploy-flow-impact-foot muted">
+              Click Request release to open a confirmation dialog with the full checklist.
+            </p>
+          )}
+        </>
+      ) : (
+        <p className="deploy-flow-impact-text muted">Could not load release impact preview.</p>
+      )}
     </div>
   );
 }
@@ -51,7 +123,7 @@ export function DeployFlowZ2mChecklist({ flow }: { flow: DeployFlowModel }) {
         <li>Request release applies <code>zigbee2mqtt/configuration.yaml</code> via git reset.</li>
         <li>Restart the <strong>Zigbee2MQTT add-on</strong> on prod HA so the new friendly name loads.</li>
         <li>
-          Return to <Link to="/operations?section=entity-deploy">Operations → Entity deploy gate</Link> to rescan if
+          Return to <Link to="/operations?section=entity-deploy">Operations → Entity Janitor</Link> to rescan if
           needed.
         </li>
         <li>
@@ -77,6 +149,46 @@ export function DeployFlowShipSection({
   };
 }) {
   const navigate = useNavigate();
+  const { push } = useToast();
+  const [releaseDialogOpen, setReleaseDialogOpen] = useState(false);
+  const [releaseBusy, setReleaseBusy] = useState(false);
+
+  useEffect(() => {
+    setReleaseDialogOpen(false);
+  }, [flow.gateRefreshKey]);
+
+  const runRelease = async () => {
+    setReleaseBusy(true);
+    try {
+      const result = await releaseAgentApi.apply({ gitRef: "origin/main" });
+      const fallback = result.message || (result.ok ? "Done" : "Action failed");
+      const toast = actionToast("request-release", result.ok, fallback);
+      push({ message: result.message?.trim() ? result.message : toast.message, tone: toast.tone, icon: toast.icon });
+      if (result.ok) {
+        setReleaseDialogOpen(false);
+        flow.bumpGate();
+      } else {
+        setReleaseDialogOpen(false);
+        navigate("/diagnostics");
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Action failed";
+      const toast = actionToast("request-release", false, msg);
+      push({ message: toast.message, tone: "err", icon: toast.icon });
+      setReleaseDialogOpen(false);
+      navigate("/diagnostics");
+    } finally {
+      setReleaseBusy(false);
+    }
+  };
+
+  const handleRequestReleaseClick = () => {
+    if (flow.impactPreview?.requiresConfirm || (flow.impactPreview?.warnings.length ?? 0) > 0) {
+      setReleaseDialogOpen(true);
+      return;
+    }
+    void runRelease();
+  };
 
   return (
     <section id="deploy-flow-panel" className="dash-panel deploy-flow-panel deploy-flow-panel--compact">
@@ -158,16 +270,15 @@ export function DeployFlowShipSection({
             <span className="deploy-flow-compact-text">{flow.step3Text}</span>
           </div>
           <div className="deploy-flow-compact-step-actions">
-            <ActionButton
-              label="Request release"
-              compact
-              disabled={!flow.canRequestRelease}
+            <button
+              type="button"
+              className="btn primary btn-compact"
+              disabled={!flow.canRequestRelease || releaseBusy}
               title={flow.requestReleaseTitle}
-              toastPreset="request-release"
-              onRun={() => releaseAgentApi.apply({ gitRef: "origin/main" })}
-              onDone={flow.bumpGate}
-              onFailure={() => navigate("/diagnostics")}
-            />
+              onClick={handleRequestReleaseClick}
+            >
+              {releaseBusy ? "Running…" : "Request release"}
+            </button>
             {flow.prodWritesEnabled && (
               <ActionButton
                 label="Deploy to prod (legacy)"
@@ -184,6 +295,15 @@ export function DeployFlowShipSection({
           </div>
         </div>
       </div>
+      <ReleaseConfirmDialog
+        open={releaseDialogOpen}
+        busy={releaseBusy}
+        impact={flow.impactPreview}
+        onClose={() => {
+          if (!releaseBusy) setReleaseDialogOpen(false);
+        }}
+        onConfirm={() => void runRelease()}
+      />
     </section>
   );
 }
@@ -206,6 +326,7 @@ export function DeployFlowPanel({
     commit?: number;
     push?: number;
     gate?: number;
+    impact?: number;
     prod?: number;
   };
 }) {
@@ -215,6 +336,7 @@ export function DeployFlowPanel({
   return (
     <>
       <DeployFlowGateHint flow={flow} attentionOrder={attentionOrders?.gate} />
+      <DeployFlowImpactPreview flow={flow} attentionOrder={attentionOrders?.impact} />
       <DeployFlowZ2mChecklist flow={flow} />
       <DeployFlowShipSection flow={flow} onOpenCommit={onOpenCommit} attentionOrders={attentionOrders} />
     </>

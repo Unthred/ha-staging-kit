@@ -47,8 +47,9 @@ export default function ActivityPage() {
   }, [filtered]);
 
   return (
-    <div className="dash activity-page">
+    <div className="dash dash-live-compact activity-page">
       <DashboardHeader
+        compact
         kicker="Activity"
         title="Automations & scripts"
         subtitle="Live logbook stream from production and staging Home Assistant"

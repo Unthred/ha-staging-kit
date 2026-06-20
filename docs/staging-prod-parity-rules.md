@@ -59,9 +59,11 @@ Use this when changing sync scripts, deploy paths, or onboarding copy.
 
 ### 3. LAN / hardware integrations — **disabled on staging**
 
-**Rule:** After apply-config, run `disable-lan-integrations.sh` (ESPHome, Cast, Broadlink, Android TV, etc.).
+**Rule:** After apply-config / storage sync, `prune-staging-config-entries.sh` strips LAN/voice/analytics entries from disk; after restart, `quiesce-staging-integrations.sh` removes any survivors via REST DELETE (HA 2026+ — `/disable` REST is gone).
 
-**Why:** Staging must not discover or actuate devices on the LAN.
+**Why:** Staging must not discover or actuate devices on the LAN; Docker staging cannot run Z-Wave USB, Reolink LAN, Wyoming voice, or Analytics.
+
+**Manual once (if still failing):** SmartThings / Tuya — Reconfigure in HA UI (OAuth tokens are staging-local; preserve keeps them across sync after first success).
 
 ### 4. Presence — **state mirror, not credential mirror**
 

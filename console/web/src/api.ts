@@ -4,6 +4,14 @@ export type TestResult = { ok: boolean; message: string };
 export type DeployResult = { ok: boolean; message: string; logTail?: string };
 export type OperationResult = { ok: boolean; message: string; logTail?: string | null };
 
+export type BaselineFromProdRequest = {
+  pushToGitHub?: boolean;
+  freshDatabase?: boolean;
+  deployMirror?: boolean;
+  /** Apply config, storage sync, mirror, and restart staging HA after git baseline. */
+  rebuildStaging?: boolean;
+};
+
 export type ReleaseHistoryEntry = {
   index: number;
   sha: string;
@@ -31,6 +39,28 @@ export type ReleaseAgentPlanResult = {
   logTail?: string | null;
 };
 
+export type ReleaseImpactPreviewResult = {
+  ok: boolean;
+  message: string;
+  impactLevel: "low" | "medium" | "high" | string;
+  blocksRelease: boolean;
+  requiresConfirm: boolean;
+  summary: string;
+  blockers: string[];
+  warnings: string[];
+  gitSha?: string | null;
+  shortSha?: string | null;
+  baselineSha?: string | null;
+  yamlDeploy: boolean;
+  lovelaceBundleDeploy: boolean;
+  helpersDeploy: boolean;
+  z2mConfigDeploy: boolean;
+  requiresProdRestart: boolean;
+  requiresRegistryStop: boolean;
+  willRunManifests: string[];
+  deployGate?: ProdStorageDeployGateResult | null;
+};
+
 export type ReleaseAgentHistoryResult = {
   ok: boolean;
   message: string;
@@ -54,6 +84,19 @@ export type EntityDeployRecheckDelta = {
   resolvedEntityIds: string[];
   newEntityIds: string[];
   previousScanAt?: string | null;
+};
+
+export type ProdStorageDeployGateResult = {
+  ok: boolean;
+  deltaBlockerCount: number;
+  preExistingMissingCount: number;
+  newEntityRefCount: number;
+  removedEntityRefCount: number;
+  missingEntities: string[];
+  missingEntityIssues: LovelaceMissingEntityIssue[];
+  missingCustomCards: string[];
+  z2mConfigIssues: Z2mStaleConfigIssue[];
+  issues: string[];
 };
 
 export type PreflightProgressSnapshot = {
@@ -290,6 +333,7 @@ export type DashboardStatus = {
   stagingMonitoring?: HaMonitoringStats | null;
   entityParity?: EntityParitySnapshot | null;
   stagingRepresentation?: StagingRepresentationStatus | null;
+  lovelaceDrift?: LovelaceDriftStatus | null;
   mqttBridge?: MqttBridgeStats | null;
   syncLogTail: string[];
   pollHistory: PollHistoryPoint[];
@@ -400,6 +444,12 @@ export type GitFileDiff = {
   diff: string;
 };
 
+export type GitUnpushedCommitPreview = {
+  shortSha: string;
+  subject: string;
+  committedAt?: string | null;
+};
+
 export type GitSnapshot = {
   configured: boolean;
   branch?: string | null;
@@ -431,6 +481,10 @@ export type GitSnapshot = {
   prodDeployTracked?: boolean;
   prodLastDeploySha?: string | null;
   prodPreviousDeploySha?: string | null;
+  unpushedCommits?: GitUnpushedCommitPreview[];
+  unpushedHaFiles?: string[];
+  unpushedRepoFiles?: string[];
+  unpushedRemoteRef?: string | null;
 };
 
 export type PersonSyncSnapshot = {
@@ -510,6 +564,49 @@ export type ConfigInventoryStats = {
   scriptCount: number;
   packageCount: number;
   blueprintCount: number;
+  automationGitGap?: AutomationGitGapSnapshot | null;
+};
+
+export type AutomationGitGapSnapshot = {
+  available: boolean;
+  gitAutomationCount: number;
+  haAutomationCount: number;
+  missingFromGitCount: number;
+  missingFromGit: AutomationGitGapRow[];
+};
+
+export type AutomationGitGapRow = {
+  id: string;
+  entityId: string;
+  alias: string;
+  detail: string;
+};
+
+export type EntityParityDetailSnapshot = {
+  available: boolean;
+  domain: string;
+  prodOnlyCount: number;
+  stagingOnlyCount: number;
+  prodOnly: EntityParityDetailRow[];
+  stagingOnly: EntityParityDetailRow[];
+  prodOnlyCategories: EntityParityCategorySummary[];
+};
+
+export type EntityParityDetailRow = {
+  entityId: string;
+  category: string;
+  reason: string;
+  platform?: string | null;
+  prodState?: string | null;
+  stagingState?: string | null;
+  inStagingRegistry: boolean;
+  orphanedOnStaging: boolean;
+};
+
+export type EntityParityCategorySummary = {
+  category: string;
+  label: string;
+  count: number;
 };
 
 export type HaMonitoringStats = {
@@ -552,6 +649,7 @@ export type StagingRepresentationStatus = {
   summary: string;
   configMatchesGit: boolean;
   entityRegistryAligned: boolean;
+  lovelaceAligned: boolean;
   presenceMatches: boolean;
   gitClean: boolean;
   issues: RepresentationIssue[];
@@ -563,6 +661,17 @@ export type RepresentationIssue = {
   title: string;
   detail: string;
   samples: string[];
+};
+
+export type LovelaceDriftStatus = {
+  available: boolean;
+  stagingDiffersFromRepo: boolean;
+  stagingDiffersFromProd: boolean;
+  stagingTitle?: string | null;
+  repoTitle?: string | null;
+  prodTitle?: string | null;
+  changedPaths: string[];
+  detail: string;
 };
 
 export type MqttBridgeStats = {
@@ -789,10 +898,15 @@ export const dashboardApi = {
   gitDiff: (path: string) => api<GitFileDiff>(`/api/git/diff?path=${encodeURIComponent(path)}`),
   stagingDiff: (path: string) => api<GitFileDiff>(`/api/git/staging-diff?path=${encodeURIComponent(path)}`),
   mainProdDiff: (path: string) => api<GitFileDiff>(`/api/git/main-prod-diff?path=${encodeURIComponent(path)}`),
+  stagingProdLovelaceDiff: (path: string) =>
+    api<GitFileDiff>(`/api/git/staging-prod-lovelace-diff?path=${encodeURIComponent(path)}`),
+  unpushedDiff: (path: string) => api<GitFileDiff>(`/api/git/unpushed-diff?path=${encodeURIComponent(path)}`),
   gitCommit: (body: { scope: "ha" | "repo" | "all"; message?: string | null }) =>
     api<OperationResult>("/api/git/commit", { method: "POST", body: JSON.stringify(body) }),
   gitChangedFiles: () =>
     api<{ haChangedFiles: string[]; repoChangedFiles: string[] }>("/api/git/changed-files"),
+  entityParityDetails: (domain: string) =>
+    api<EntityParityDetailSnapshot>(`/api/dashboard/entity-parity/${encodeURIComponent(domain)}/details`),
   gitPush: (branch?: string | null) =>
     api<OperationResult>("/api/git/push", {
       method: "POST",
@@ -821,11 +935,13 @@ export type DiagnosticsStatus = {
   pollHistory: PollHistoryPoint[];
   syncActivity?: SyncActivitySnapshot | null;
   syncLogLines: string[];
+  personPollLogLines: string[];
   mqttLogLines: string[];
   prodHaLog: HaLogSnapshot;
   stagingHaLog: HaLogSnapshot;
   mirrorConfigured: boolean;
   syncLogPath: string;
+  personPollLogPath: string;
   mqttLogPath?: string | null;
   refreshedAt: string;
   operationLog: OperationLogEntry[];
@@ -905,6 +1021,11 @@ export const operationsApi = {
   personPoll: () => api<OperationResult>("/api/operations/person-poll", { method: "POST" }),
   storageSync: () => api<OperationResult>("/api/operations/storage-sync", { method: "POST" }),
   resetWorkbench: () => api<OperationResult>("/api/operations/reset-workbench", { method: "POST" }),
+  baselineFromProd: (body?: BaselineFromProdRequest) =>
+    api<OperationResult>("/api/operations/baseline-from-prod", {
+      method: "POST",
+      body: JSON.stringify(body ?? {}),
+    }),
   mirrorReadOnly: () => api<OperationResult>("/api/operations/mirror-mode", { method: "POST", body: JSON.stringify({ controlMode: false }) }),
   mirrorControl: () => api<OperationResult>("/api/operations/mirror-mode", { method: "POST", body: JSON.stringify({ controlMode: true }) }),
   setMirrorMode: (controlMode: boolean) =>
@@ -919,6 +1040,7 @@ export const operationsApi = {
   snapshotFromStaging: () => api<OperationResult>("/api/operations/snapshot-from-staging", { method: "POST" }),
   deployToProd: () => api<OperationResult>("/api/operations/deploy-to-prod", { method: "POST" }),
   prodStoragePreflight: () => api<ProdStoragePreflightResult>("/api/operations/prod-storage-preflight"),
+  prodStorageDeployGate: () => api<ProdStorageDeployGateResult>("/api/operations/prod-storage-deploy-gate"),
   prodStoragePreflightProgress: () =>
     api<PreflightProgressSnapshot>("/api/operations/prod-storage-preflight/progress"),
   lovelaceParityFix: (body: { entityId: string; action: string; replacementEntityId?: string | null }) =>
@@ -961,6 +1083,8 @@ export const operationsApi = {
 export const releaseAgentApi = {
   plan: (gitRef = "origin/main") =>
     api<ReleaseAgentPlanResult>(`/api/release-agent/plan?gitRef=${encodeURIComponent(gitRef)}`),
+  impact: (gitRef = "origin/main") =>
+    api<ReleaseImpactPreviewResult>(`/api/release-agent/impact?gitRef=${encodeURIComponent(gitRef)}`),
   history: () => api<ReleaseAgentHistoryResult>("/api/release-agent/history"),
   apply: (body: ReleaseAgentApplyRequest = {}) =>
     api<OperationResult>("/api/release-agent/apply", {

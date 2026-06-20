@@ -36,6 +36,8 @@ export function useNavAttention() {
   const [preflightError, setPreflightError] = useState<ApiError | null>(null);
   const [preflightScannedAt, setPreflightScannedAt] = useState<number | null>(null);
   const dashboardRefreshInFlightRef = useRef(false);
+  const pendingDashboardRefreshRef = useRef(false);
+  const dashboardRequestGenRef = useRef(0);
   const preflightInFlightRef = useRef<Promise<ProdStoragePreflightResult> | null>(null);
   const stableRef = useRef<{ items: NavAttentionItem[]; counts: NavAttentionCounts }>({
     items: [],
@@ -91,16 +93,31 @@ export function useNavAttention() {
   );
 
   const refresh = useCallback(async () => {
-    if (dashboardRefreshInFlightRef.current) return;
+    if (dashboardRefreshInFlightRef.current) {
+      pendingDashboardRefreshRef.current = true;
+      return;
+    }
+
     dashboardRefreshInFlightRef.current = true;
+    const requestGen = ++dashboardRequestGenRef.current;
+
     try {
       const [dash, onboard] = await Promise.all([dashboardApi.status(), onboardingApi.status()]);
+      if (requestGen !== dashboardRequestGenRef.current) return;
       setDashboard(dash);
       setOnboarding(onboard);
     } catch (e) {
+      if (requestGen !== dashboardRequestGenRef.current) return;
       console.warn("nav attention refresh failed:", toApiError(e).detail);
     } finally {
-      dashboardRefreshInFlightRef.current = false;
+      if (requestGen === dashboardRequestGenRef.current) {
+        dashboardRefreshInFlightRef.current = false;
+      }
+
+      if (pendingDashboardRefreshRef.current) {
+        pendingDashboardRefreshRef.current = false;
+        void refresh();
+      }
     }
   }, []);
 

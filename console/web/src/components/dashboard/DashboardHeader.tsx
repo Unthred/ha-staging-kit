@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { HaLogo } from "../HaLogo";
 import { formatRefreshLabel } from "../../lib/formatTime";
 
@@ -10,6 +11,7 @@ export function DashboardHeader({
   prodUrl,
   busy,
   compact,
+  headerExtra,
   onRefresh,
 }: {
   kicker: string;
@@ -20,6 +22,7 @@ export function DashboardHeader({
   prodUrl?: string | null;
   busy?: boolean;
   compact?: boolean;
+  headerExtra?: ReactNode;
   onRefresh?: () => void;
 }) {
   const today = new Intl.DateTimeFormat(undefined, {
@@ -42,6 +45,7 @@ export function DashboardHeader({
         </div>
       </div>
       <div className="dash-header-actions">
+        {headerExtra}
         {prodUrl && (
           <a href={prodUrl} target="_blank" rel="noreferrer" className="btn secondary">
             Prod HA

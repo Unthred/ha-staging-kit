@@ -14,7 +14,8 @@ public sealed class WorkbenchResetService(
     LovelaceParityFixActionStore fixActionStore,
     EntityDeployScanStore scanStore,
     SidecarRunner sidecar,
-    DockerRunner docker)
+    DockerRunner docker,
+    StagingQuiesceService stagingQuiesce)
 {
     static readonly string[] LovelaceRepoRelativePaths =
     [
@@ -83,7 +84,10 @@ public sealed class WorkbenchResetService(
         StampRepoLovelaceFresh();
         logs.Add("Marked git Lovelace as authoritative — staging UI capture will not overwrite after prod storage sync.");
 
-        var (applyOk, applyMsg) = await sidecar.RunScriptAsync("/sidecar/sbin/apply-config.sh", ct);
+        var (applyOk, applyMsg) = await sidecar.RunScriptAsync(
+            "/sidecar/sbin/apply-config.sh",
+            TimeSpan.FromMinutes(12),
+            ct);
         logs.Add(applyMsg);
         if (!applyOk)
             return Fail(logs, applyMsg);
@@ -96,6 +100,10 @@ public sealed class WorkbenchResetService(
         logs.Add(restartMsg);
         if (!restartOk)
             return Fail(logs, restartMsg);
+
+        logs.Add($"Restarted {container} — quiescing staging-unsafe integrations");
+        var (_, quiesceMsg) = await stagingQuiesce.QuiesceAsync(ct);
+        logs.Add(quiesceMsg);
 
         logs.Add($"Restarted {container}.");
         return new OperationResult(

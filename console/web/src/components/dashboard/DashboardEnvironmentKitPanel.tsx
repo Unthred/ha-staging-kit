@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import type { ConfigInventoryStats, DashboardStatus, StagingTargetSnapshot, SyncActivitySnapshot } from "../../api";
+import { useStableMinHeight } from "../../hooks/useStableMinHeight";
 import { MirrorControlModeToggle } from "../MirrorControlModeToggle";
 import { SectionAttentionBadge } from "../PageAttentionPanel";
 
@@ -39,12 +40,10 @@ export function DashboardEnvironmentKitPanel({
   onMirrorModeChanged?: () => void;
   attentionCount?: number;
 }) {
-  const showStagingPaths = Boolean(
-    target?.configPath || target?.containerName || target?.gitRepoPath,
-  );
+  const panelStable = useStableMinHeight("env-kit-panel-v2");
 
   return (
-    <section className="dash-panel dash-env-kit-panel">
+    <section ref={panelStable.ref} style={panelStable.style} className="dash-panel dash-env-kit-panel">
       <header className="dash-panel-head dash-panel-head-tight">
         <div>
           <p className="dash-panel-eyebrow">Kit</p>
@@ -78,82 +77,102 @@ export function DashboardEnvironmentKitPanel({
             syncActivity?.lastPersonPollRelative ? "ok" : "muted",
           )}
         </div>
-        {sidecar && (
-          <p className="muted dash-env-kit-meta">
+        {sidecar ? (
+          <p className="muted dash-env-kit-meta dash-env-kit-meta-reserved">
             Intervals: apply on demand · storage every {sidecar.storageSyncIntervalSeconds}s · person every{" "}
             {sidecar.personPollIntervalSeconds}s
+          </p>
+        ) : (
+          <p className="muted dash-env-kit-meta dash-env-kit-meta-reserved">
+            Intervals: apply on demand · storage every — · person every —
           </p>
         )}
       </div>
 
-      {showStagingPaths && (
-        <div className="dash-env-kit-section">
-          <h4 className="dash-env-kit-label">Staging paths</h4>
-          <div className="dash-env-stat-grid dash-env-path-grid">
-            {pathStat("Config path", target?.configPath ? target.configPath : "—")}
-            {pathStat(
-              "Writable",
-              target?.configPath ? (target.configPathWritable ? "Yes" : "No") : "—",
-              target?.configPathWritable ? "ok" : target?.configPath ? "warn" : "muted",
-            )}
-            {pathStat(
-              "Container",
-              target?.containerName
-                ? `${target.containerName}${target.containerRunning ? " · running" : " · stopped"}`
-                : "—",
-              target?.containerRunning ? "ok" : target?.containerName ? "warn" : "muted",
-            )}
-            {pathStat(
-              "Kit git mount",
-              target?.gitRepoPath
-                ? `${target.gitRepoPath}${target.gitBranch ? ` @ ${target.gitBranch}` : ""}`
-                : "—",
-            )}
-          </div>
+      <div className="dash-env-kit-section">
+        <h4 className="dash-env-kit-label">Staging paths</h4>
+        <div className="dash-env-stat-grid dash-env-path-grid">
+          {pathStat("Config path", target?.configPath ? target.configPath : "—")}
+          {pathStat(
+            "Writable",
+            target?.configPath ? (target.configPathWritable ? "Yes" : "No") : "—",
+            target?.configPath ? (target.configPathWritable ? "ok" : "warn") : "muted",
+          )}
+          {pathStat(
+            "Container",
+            target?.containerName
+              ? `${target.containerName}${target.containerRunning ? " · running" : " · stopped"}`
+              : "—",
+            target?.containerRunning ? "ok" : target?.containerName ? "warn" : "muted",
+          )}
+          {pathStat(
+            "Kit git mount",
+            target?.gitRepoPath
+              ? `${target.gitRepoPath}${target.gitBranch ? ` @ ${target.gitBranch}` : ""}`
+              : "—",
+          )}
         </div>
-      )}
+      </div>
 
-      {mirror?.configured && (
-        <div className="dash-env-kit-section" id="mirror-control">
-          <div className="dash-env-kit-section-head">
-            <h4 className="dash-env-kit-label">MQTT mirror</h4>
+      <div className="dash-env-kit-section" id="mirror-control">
+        <div className="dash-env-kit-section-head">
+          <h4 className="dash-env-kit-label">MQTT mirror</h4>
+          {mirror?.configured ? (
             <Link to="/operations" className="dash-chip-link dash-env-kit-inline-link">
               Deploy on Operations
             </Link>
-          </div>
-          <div className="dash-env-stat-grid dash-env-mirror-grid">
-            {stat(
-              "Broker",
-              mirror.running ? "Running" : "Stopped",
-              mirror.running ? "ok" : "warn",
-            )}
-            {stat(
-              "Prod source",
-              mirror.prodMqttHost ? `${mirror.prodMqttHost}:${mirror.prodMqttPort}` : "—",
-              mirror.prodMqttHost ? undefined : "muted",
-            )}
-            {stat(
-              "Staging broker",
-              target?.stagingMqttBroker ? `${target.stagingMqttBroker}:${target.stagingMqttPort}` : "—",
-              target?.stagingMqttBroker ? undefined : "muted",
-            )}
-            <MirrorControlModeToggle inline mirror={mirror} onChanged={onMirrorModeChanged} />
-          </div>
+          ) : (
+            <Link to="/settings?section=mirror" className="dash-chip-link dash-env-kit-inline-link">
+              Settings
+            </Link>
+          )}
         </div>
-      )}
+        <div className="dash-env-stat-grid dash-env-mirror-grid">
+          {stat(
+            "Broker",
+            mirror === undefined ? "—" : mirror?.configured ? (mirror.running ? "Running" : "Stopped") : "—",
+            mirror === undefined ? "muted" : mirror?.configured ? (mirror.running ? "ok" : "warn") : "muted",
+          )}
+          {stat(
+            "Prod source",
+            mirror?.prodMqttHost ? `${mirror.prodMqttHost}:${mirror.prodMqttPort}` : "—",
+            mirror?.prodMqttHost ? undefined : "muted",
+          )}
+          {stat(
+            "Staging broker",
+            target?.stagingMqttBroker ? `${target.stagingMqttBroker}:${target.stagingMqttPort}` : "—",
+            target?.stagingMqttBroker ? undefined : "muted",
+          )}
+          <MirrorControlModeToggle
+            inline
+            mirror={mirror ?? null}
+            statusLoading={mirror === undefined}
+            onChanged={onMirrorModeChanged}
+          />
+        </div>
+        {(mirror === undefined || !mirror?.configured) && (
+          <p className="muted dash-env-kit-meta dash-env-kit-meta-reserved">
+            {mirror === undefined
+              ? "Loading mirror status…"
+              : "Optional — enable in Settings → MQTT mirror."}
+          </p>
+        )}
+      </div>
 
-      {inventory?.available && (
-        <div className="dash-env-kit-section">
-          <h4 className="dash-env-kit-label">Shared YAML in git</h4>
-          <div className="dash-env-stat-grid dash-env-stat-grid-4">
-            {stat("Automations", String(inventory.automationCount))}
-            {stat("Scripts", String(inventory.scriptCount))}
-            {stat("Packages", String(inventory.packageCount))}
-            {stat("Blueprints", String(inventory.blueprintCount))}
-          </div>
-          <p className="muted dash-env-kit-meta">Counts from repo files — live entity totals are on Overview.</p>
+      <div className="dash-env-kit-section">
+        <h4 className="dash-env-kit-label">Shared YAML in git</h4>
+        <div className="dash-env-stat-grid dash-env-stat-grid-4">
+          {stat("Automations", inventory?.available ? String(inventory.automationCount) : "—")}
+          {stat("Scripts", inventory?.available ? String(inventory.scriptCount) : "—")}
+          {stat("Packages", inventory?.available ? String(inventory.packageCount) : "—")}
+          {stat("Blueprints", inventory?.available ? String(inventory.blueprintCount) : "—")}
         </div>
-      )}
+        <p className="muted dash-env-kit-meta dash-env-kit-meta-reserved">
+          {inventory?.available
+            ? "Counts from repo files — live entity totals are on Overview."
+            : "Counts from repo files — loading inventory…"}
+        </p>
+      </div>
     </section>
   );
 }

@@ -81,8 +81,8 @@ else
   log "Skipping .storage sync (SKIP_STORAGE_SYNC=1)"
 fi
 
-if ! "$SCRIPT_DIR/disable-lan-integrations.sh"; then
-  log "WARN: disable-lan-integrations failed — YAML guards still apply"
+if ! "$SCRIPT_DIR/finalize-staging-after-restart.sh"; then
+  log "WARN: staging finalize failed — restart staging HA or run finalize-staging-after-restart.sh"
 fi
 
 touch "$HA_CONFIG/.staging-initialized"

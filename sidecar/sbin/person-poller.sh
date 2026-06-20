@@ -28,15 +28,15 @@ push_staging_state() {
 
 poll_once() {
   if ! read_token_file "$PROD_API_TOKEN_FILE" PROD_URL PROD_TOKEN; then
-    log "WARN: missing prod API token ($PROD_API_TOKEN_FILE) — skip person poll"
+    poll_log "WARN: missing prod API token ($PROD_API_TOKEN_FILE) — skip person poll"
     return 0
   fi
   if ! read_token_file "$STAGING_API_TOKEN_FILE" _STAGING_URL STAGING_TOKEN; then
-    log "WARN: missing staging API token ($STAGING_API_TOKEN_FILE) — skip person poll"
+    poll_log "WARN: missing staging API token ($STAGING_API_TOKEN_FILE) — skip person poll"
     return 0
   fi
   if [[ ! -f "$STORAGE" ]]; then
-    log "WARN: missing $STORAGE — run storage sync first"
+    poll_log "WARN: missing $STORAGE — run storage sync first"
     return 0
   fi
 
@@ -46,22 +46,29 @@ poll_once() {
   ' "$REGISTRY" "$STORAGE" | sort -u)
 
   if [[ ${#entities[@]} -eq 0 ]]; then
-    log "WARN: no person/tracker entities in registry"
+    poll_log "WARN: no person/tracker entities in registry"
     return 0
   fi
 
   local entity state_json filtered synced=0 state
   for entity in "${entities[@]}"; do
     if ! state_json=$(fetch_prod_state "$entity"); then
-      log "WARN: failed prod fetch for $entity"
+      poll_log "WARN: failed prod fetch for $entity"
       continue
     fi
     filtered=$(echo "$state_json" | jq -c '{
       state: .state,
-      attributes: (.attributes | del(
-        .restored, .supported_features, .icon, .device_class,
-        .unit_of_measurement, .state_class
-      ))
+      attributes: (
+        (.attributes // {} | del(
+          .restored, .supported_features, .icon, .device_class,
+          .unit_of_measurement, .state_class,
+          .source_last_changed, .source_last_updated, .source_mirrored_at
+        )) + {
+          source_last_changed: .last_changed,
+          source_last_updated: .last_updated,
+          source_mirrored_at: (now | strftime("%Y-%m-%dT%H:%M:%S%z"))
+        }
+      )
     }')
     state=$(echo "$filtered" | jq -r '.state')
     if [[ "$state" == "unknown" || "$state" == "unavailable" ]]; then
@@ -77,12 +84,12 @@ poll_once() {
     if push_staging_state "$entity" "$filtered"; then
       synced=$((synced + 1))
     else
-      log "WARN: failed staging push for $entity (staging API rejected — regenerate staging LLAT in kit Settings → Staging)"
+      poll_log "WARN: failed staging push for $entity (staging API rejected — regenerate staging LLAT in kit Settings → Staging)"
     fi
   done
 
   if [[ $synced -gt 0 ]]; then
-    log "Synced $synced person/tracker states from prod"
+    poll_log "Synced $synced person/tracker states from prod"
   fi
 }
 
@@ -90,7 +97,7 @@ MODE="${1:---once}"
 case "$MODE" in
   --once) poll_once ;;
   --loop)
-    log "Person poll loop every ${PERSON_POLL_INTERVAL}s"
+    poll_log "Person poll loop every ${PERSON_POLL_INTERVAL}s"
     while true; do
       poll_once || true
       sleep "$PERSON_POLL_INTERVAL"

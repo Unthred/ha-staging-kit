@@ -32,6 +32,8 @@ public sealed class KitPaths(IConfiguration config)
 
     public string SyncLogLocation => $"{HostKitDataDir}/sync.log";
 
+    public string PersonPollLogLocation => $"{HostKitDataDir}/person-poll.log";
+
     static string? FirstNonEmpty(params string?[] values)
     {
         foreach (var v in values)

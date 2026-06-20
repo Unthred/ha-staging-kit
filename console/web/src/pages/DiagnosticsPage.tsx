@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Chip } from "../components/Chip";
-import { LoadErrorPanel } from "../components/LoadErrorPanel";
+import { PageLoadBanner } from "../components/PageLoadBanner";
 import { HaDiagnosticsPanel } from "../components/diagnostics/HaDiagnosticsPanel";
 import { LogPanel } from "../components/diagnostics/LogPanel";
 import { DashboardHeader } from "../components/dashboard/DashboardHeader";
@@ -17,14 +17,16 @@ import { setHaUrls } from "../lib/haUrlsStore";
 import { usePollingRefresh } from "../hooks/usePollingRefresh";
 import { attentionCountForAnchor, attentionCountForDiagTab } from "../lib/navAttention";
 import { shortDetail, statusTone } from "../lib/dashboardHealth";
+import { EMPTY_DIAGNOSTICS } from "../lib/pageShellDefaults";
 
-type TabId = "signals" | "ops" | "sync" | "mqtt" | "ha";
+type TabId = "signals" | "ops" | "sync" | "person-poll" | "mqtt" | "ha";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "signals", label: "Signals" },
   { id: "ha", label: "HA logs" },
   { id: "ops", label: "Operations" },
   { id: "sync", label: "Sync log" },
+  { id: "person-poll", label: "Person poll" },
   { id: "mqtt", label: "MQTT log" },
 ];
 
@@ -138,32 +140,34 @@ export default function DiagnosticsPage() {
 
   usePollingRefresh(fetchDiagnostics, 30000);
 
-  if (error && !data) {
-    return <LoadErrorPanel title="Diagnostics" error={error} onRetry={fetchDiagnostics} />;
-  }
-
-  const tabs = data?.mirrorConfigured ? TABS : TABS.filter((t) => t.id !== "mqtt");
+  const view = data ?? EMPTY_DIAGNOSTICS;
+  const tabs = view.mirrorConfigured ? TABS : TABS.filter((t) => t.id !== "mqtt");
   const tabBodyClass =
     tab === "signals"
       ? "diag-tab-body diag-tab-body--signals"
       : tab === "ha"
         ? "diag-tab-body diag-tab-body--ha"
-        : "diag-tab-body diag-tab-body--log";
+        : tab === "person-poll"
+          ? "diag-tab-body diag-tab-body--log diag-tab-body--person-poll"
+          : "diag-tab-body diag-tab-body--log";
   const signalsAttention = attentionCountForDiagTab(attentionItems, "signals");
   const insightsAttention = attentionCountForAnchor(attentionItems, "diag-insights");
   const subsystemsAttention = attentionCountForAnchor(attentionItems, "diag-subsystems");
   const haLogsAttention = attentionCountForDiagTab(attentionItems, "ha");
+  const personPollAttention = attentionCountForDiagTab(attentionItems, "person-poll");
 
-  const stagingUrl = data?.stagingHaUrl || haUrls.stagingUrl;
-  const prodUrl = data?.prodHaUrl || haUrls.prodUrl;
+  const stagingUrl = view.stagingHaUrl || haUrls.stagingUrl;
+  const prodUrl = view.prodHaUrl || haUrls.prodUrl;
 
   return (
-    <div className="dash diag-page">
+    <div className="dash dash-live-compact diag-page">
+      {error && !data ? <PageLoadBanner error={error} onRetry={() => void fetchDiagnostics()} /> : null}
       <DashboardHeader
+        compact
         kicker="Diagnostics"
         title="Logs & signals"
         subtitle="Kit sync/MQTT signals plus Home Assistant integration errors and core logs"
-        refreshedAt={data?.refreshedAt}
+        refreshedAt={view.refreshedAt || undefined}
         stagingUrl={stagingUrl}
         prodUrl={prodUrl}
         busy={busy}
@@ -181,12 +185,13 @@ export default function DiagnosticsPage() {
             <span className="diag-tab-label">{t.label}</span>
             {t.id === "signals" ? <SectionAttentionBadge count={signalsAttention} /> : null}
             {t.id === "ha" ? <SectionAttentionBadge count={haLogsAttention} /> : null}
+            {t.id === "person-poll" ? <SectionAttentionBadge count={personPollAttention} /> : null}
           </button>
         ))}
       </nav>
 
       <div className={tabBodyClass}>
-        {tab === "signals" && data && (
+        {tab === "signals" && (
           <div className="diag-signals">
             <section id="diag-subsystems" className="card diag-subsystems">
               <header className="diag-section-head">
@@ -196,35 +201,39 @@ export default function DiagnosticsPage() {
                 </h3>
               </header>
               <div className="diag-metrics">
-                {data.subsystems.map((s) => (
+                {view.subsystems.map((s) => (
                   <DashboardMetricCard key={s.name} name={s.name} tone={statusTone(s.status)} detail={shortDetail(s.detail)} />
                 ))}
               </div>
             </section>
 
-            <DashboardInsightsPanel issues={data.issues} attentionCount={insightsAttention} />
+            <DashboardInsightsPanel issues={view.issues} attentionCount={insightsAttention} />
 
             <section className="card diag-section-compact">
               <header className="diag-section-head">
                 <h3>Recent activity</h3>
               </header>
-              <DashboardActivityTimeline activity={data.syncActivity} compact />
+              <DashboardActivityTimeline activity={view.syncActivity} compact />
             </section>
+          </div>
+        )}
 
+        {tab === "person-poll" && (
+          <div className="diag-person-poll">
             <section className="card diag-section-compact diag-poll-panel">
               <header className="diag-section-head">
                 <h3>Person poll history</h3>
                 <p className="muted diag-section-hint">
-                  {data.pollHistory.length > 0
-                    ? `${data.pollHistory.length} recent poll(s)`
+                  {view.pollHistory.length > 0
+                    ? `${view.pollHistory.length} recent poll(s)`
                     : "No polls logged yet"}
                 </p>
               </header>
-              {data.pollHistory.length === 0 ? (
-                <p className="muted diag-log-empty diag-poll-list">Waiting for the sync loop to record polls.</p>
+              {view.pollHistory.length === 0 ? (
+                <p className="muted diag-log-empty diag-poll-list">Waiting for the person poll loop to record polls.</p>
               ) : (
                 <ul className="diag-scroll-list diag-poll-list">
-                  {data.pollHistory.map((p) => (
+                  {view.pollHistory.map((p) => (
                     <li key={p.at}>
                       <Chip status={p.ok ? "pass" : "fail"} label={p.ok ? "OK" : "Fail"} />
                       <span>
@@ -235,31 +244,33 @@ export default function DiagnosticsPage() {
                 </ul>
               )}
             </section>
+
+            <LogPanel title="Person poll log" path={view.personPollLogPath} lines={view.personPollLogLines} />
           </div>
         )}
 
-        {tab === "ha" && data && (
+        {tab === "ha" && (
           <HaDiagnosticsPanel
-            issues={data.haIssues}
-            prodHaLog={data.prodHaLog}
-            stagingHaLog={data.stagingHaLog}
+            issues={view.haIssues}
+            prodHaLog={view.prodHaLog}
+            stagingHaLog={view.stagingHaLog}
             stagingUrl={stagingUrl}
             selectedIndex={selectedHaIssue}
             onSelectIndex={selectHaIssue}
           />
         )}
 
-        {tab === "ops" && data && (
+        {tab === "ops" && (
           <section className="card diag-ops-panel">
             <header className="diag-section-head">
               <h3>Operation log</h3>
               <p className="muted diag-section-hint">{OPS_LOG_HINT}</p>
             </header>
-            {data.operationLog.length === 0 ? (
+            {view.operationLog.length === 0 ? (
               <p className="muted diag-log-empty">No operations run yet this session.</p>
             ) : (
               <ul className="diag-scroll-list ops-log-list">
-                {data.operationLog.map((entry, i) => (
+                {view.operationLog.map((entry, i) => (
                   <OpsLogRow key={i} entry={entry} />
                 ))}
               </ul>
@@ -267,16 +278,16 @@ export default function DiagnosticsPage() {
           </section>
         )}
 
-        {tab === "sync" && data && (
-          <LogPanel title="Config sync log" path={data.syncLogPath} lines={data.syncLogLines} />
+        {tab === "sync" && (
+          <LogPanel title="Config sync log" path={view.syncLogPath} lines={view.syncLogLines} />
         )}
 
-        {tab === "mqtt" && data && (
+        {tab === "mqtt" && (
           <LogPanel
             title="MQTT mirror log"
-            path={data.mqttLogPath}
-            lines={data.mqttLogLines}
-            emptyMessage={data.mirrorConfigured ? "Mirror log empty or not created yet." : "MQTT mirror is not configured."}
+            path={view.mqttLogPath}
+            lines={view.mqttLogLines}
+            emptyMessage={view.mirrorConfigured ? "Mirror log empty or not created yet." : "MQTT mirror is not configured."}
           />
         )}
       </div>

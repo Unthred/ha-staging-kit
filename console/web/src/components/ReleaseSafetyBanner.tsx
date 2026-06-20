@@ -1,10 +1,23 @@
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useReleaseSafety } from "../context/ReleaseSafetyContext";
 
+const DISMISS_KEY = "ha-staging-kit.release-safety-banner.dismissed";
+
 export function ReleaseSafetyBanner() {
   const { prodWritesLocked, lockMessage, loaded } = useReleaseSafety();
+  const [dismissed, setDismissed] = useState(
+    () => typeof sessionStorage !== "undefined" && sessionStorage.getItem(DISMISS_KEY) === "1",
+  );
 
-  if (!loaded || !prodWritesLocked) return null;
+  useEffect(() => {
+    if (!prodWritesLocked) {
+      sessionStorage.removeItem(DISMISS_KEY);
+      setDismissed(false);
+    }
+  }, [prodWritesLocked]);
+
+  if (!loaded || !prodWritesLocked || dismissed) return null;
 
   return (
     <div className="release-safety-banner" role="status">
@@ -17,8 +30,20 @@ export function ReleaseSafetyBanner() {
         Request release on Overview
       </Link>
       <Link to="/operations?section=entity-deploy" className="release-safety-banner-link">
-        Entity deploy gate
+        Entity Janitor
       </Link>
+      <button
+        type="button"
+        className="release-safety-banner-close"
+        aria-label="Dismiss prod writes locked banner"
+        title="Dismiss for this session"
+        onClick={() => {
+          sessionStorage.setItem(DISMISS_KEY, "1");
+          setDismissed(true);
+        }}
+      >
+        ×
+      </button>
     </div>
   );
 }

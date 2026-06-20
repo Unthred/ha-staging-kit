@@ -96,6 +96,12 @@ function FileList({
   );
 }
 
+function resolveDiffText(result: GitFileDiff): string {
+  if (typeof result.diff === "string") return result.diff;
+  const legacy = (result as GitFileDiff & { Diff?: string }).Diff;
+  return typeof legacy === "string" ? legacy : "";
+}
+
 export function GitUncommittedFilesDialog({
   git,
   open,
@@ -107,6 +113,7 @@ export function GitUncommittedFilesDialog({
   overrideHaFiles,
   overrideRepoFiles,
   fetchDiff,
+  initialPath,
 }: {
   git?: GitSnapshot | null;
   open: boolean;
@@ -123,6 +130,8 @@ export function GitUncommittedFilesDialog({
   overrideRepoFiles?: string[];
   /** Custom diff-fetch function; defaults to dashboardApi.gitDiff (working tree vs HEAD) */
   fetchDiff?: (path: string) => Promise<GitFileDiff>;
+  /** When opening, select this file first (must be in the file list) */
+  initialPath?: string | null;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -145,6 +154,7 @@ export function GitUncommittedFilesDialog({
   const haFiles = haOverride ?? fetchedLists?.haFiles ?? resolvedFromGit.haFiles;
   const repoFiles = repoOverride ?? fetchedLists?.repoFiles ?? resolvedFromGit.repoFiles;
   const allFiles = useMemo(() => [...haFiles, ...repoFiles], [haFiles, repoFiles]);
+  const allFilesKey = allFiles.join("\0");
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -207,13 +217,16 @@ export function GitUncommittedFilesDialog({
     const doFetch = fetchDiff ?? dashboardApi.gitDiff;
     try {
       const result = await doFetch(path);
-      setDiff(result.diff);
+      const diffText =
+        resolveDiffText(result) || `(No diff returned for ${path} — the file may be unchanged in the queued commits.)`;
+      setDiff(diffText);
       setDiffStatus(result.status);
-      const count = diffHunkCount(result.diff);
+      const count = diffHunkCount(diffText);
       const index = initialHunkIndex < 0 ? count - 1 : Math.min(initialHunkIndex, count - 1);
       setSelectedHunkIndex(Math.max(index, 0));
     } catch (e) {
       setDiffError(toApiError(e).detail);
+      setDiff(null);
       setDiffStatus(null);
       setSelectedHunkIndex(0);
     } finally {
@@ -316,9 +329,11 @@ export function GitUncommittedFilesDialog({
   }, [goToChange, open]);
 
   useEffect(() => {
-    if (!open || allFiles.length === 0 || selectedPath !== null) return;
-    void loadDiff(allFiles[0], 0);
-  }, [allFiles, loadDiff, open, selectedPath]);
+    if (!open || allFiles.length === 0) return;
+    const preferred =
+      initialPath && allFiles.includes(initialPath) ? initialPath : allFiles[0];
+    void loadDiff(preferred, 0);
+  }, [allFilesKey, initialPath, loadDiff, open]);
 
   if (!readOnly && !git?.configured) return null;
 
@@ -377,23 +392,15 @@ export function GitUncommittedFilesDialog({
           </aside>
 
           <section className="dash-git-diff-panel" aria-live="polite">
-            {allFiles.length === 0 && (
+            {allFiles.length === 0 ? (
               <p className="muted dash-git-diff-placeholder">No changed files in this view.</p>
-            )}
-            {allFiles.length > 0 && !selectedPath && diffBusy && (
-              <p className="muted dash-git-diff-placeholder">Loading first file…</p>
-            )}
-            {selectedPath && diffBusy && (
-              <p className="muted dash-git-diff-placeholder">Loading diff for {selectedPath}…</p>
-            )}
-            {selectedPath && diffError && !diffBusy && <p className="dash-git-diff-error">{diffError}</p>}
-            {selectedPath && !diffBusy && (
+            ) : (
               <>
                 <header className="dash-git-diff-head">
                   <div className="dash-git-diff-head-main">
-                    <code>{selectedPath}</code>
-                    {diffStatus && <span className="dash-badge dash-badge-info">{diffStatus}</span>}
-                    {hunkCount > 0 && (
+                    <code>{selectedPath ?? allFiles[0]}</code>
+                    {diffStatus && !diffBusy && <span className="dash-badge dash-badge-info">{diffStatus}</span>}
+                    {hunkCount > 0 && !diffBusy && (
                       <span className="muted dash-git-diff-position">
                         Change {selectedHunkIndex + 1} of {hunkCount}
                       </span>
@@ -404,28 +411,38 @@ export function GitUncommittedFilesDialog({
                       </span>
                     )}
                   </div>
-                  {allFiles.length > 0 && (
-                    <div className="dash-git-diff-nav">
-                      <button
-                        type="button"
-                        className="btn secondary dash-git-diff-nav-btn"
-                        disabled={!canGoPrev}
-                        onClick={() => goToChange(-1)}
-                      >
-                        Previous change
-                      </button>
-                      <button
-                        type="button"
-                        className="btn secondary dash-git-diff-nav-btn"
-                        disabled={!canGoNext}
-                        onClick={() => goToChange(1)}
-                      >
-                        Next change
-                      </button>
-                    </div>
-                  )}
+                  <div className="dash-git-diff-nav">
+                    <button
+                      type="button"
+                      className="btn secondary dash-git-diff-nav-btn"
+                      disabled={!canGoPrev || diffBusy}
+                      onClick={() => goToChange(-1)}
+                    >
+                      Previous change
+                    </button>
+                    <button
+                      type="button"
+                      className="btn secondary dash-git-diff-nav-btn"
+                      disabled={!canGoNext || diffBusy}
+                      onClick={() => goToChange(1)}
+                    >
+                      Next change
+                    </button>
+                  </div>
                 </header>
-                {diff && <DiffView diff={diff} activeHunkIndex={selectedHunkIndex} />}
+                <div className="dash-git-diff-body">
+                  {diffBusy && (
+                    <p className="muted dash-git-diff-placeholder">
+                      Loading diff for {selectedPath ?? allFiles[0]}…
+                    </p>
+                  )}
+                  {selectedPath && diffError && !diffBusy && (
+                    <p className="dash-git-diff-error">{diffError}</p>
+                  )}
+                  {selectedPath && !diffBusy && !diffError && diff !== null && (
+                    <DiffView diff={diff} activeHunkIndex={selectedHunkIndex} />
+                  )}
+                </div>
               </>
             )}
           </section>

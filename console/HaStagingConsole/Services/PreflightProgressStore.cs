@@ -15,7 +15,7 @@ public static class PreflightProgressStore
     static int ScanGeneration;
     static int OwnerGeneration;
 
-    public static IDisposable BeginScan(int totalSteps, string initialLabel = "Starting entity deploy scan…")
+    public static IDisposable BeginScan(int totalSteps, string initialLabel = "Starting Entity Janitor scan…")
     {
         lock (Gate)
         {

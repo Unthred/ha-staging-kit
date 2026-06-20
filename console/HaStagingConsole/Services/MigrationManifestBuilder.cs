@@ -95,7 +95,7 @@ static partial class MigrationManifestBuilder
         }
 
         throw new InvalidOperationException(
-            $"Deploy gate issue `{issue.EntityId}` has no exportable migration path.");
+            $"Entity Janitor issue `{issue.EntityId}` has no exportable migration path.");
     }
 
     public static IReadOnlyList<MigrationGitReplaceDraft> CollectGitReplacements(MigrationManifestDraft draft) =>

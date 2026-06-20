@@ -39,6 +39,12 @@ const presets: Record<string, ActionToastPreset> = {
     successIcon: "🧹",
     errorIcon: "🧹💥",
   },
+  "baseline-from-prod": {
+    success: "Baseline from prod — git, GitHub, and staging rebuilt from live prod.",
+    error: "Baseline from prod failed — check sync.log, prod SSH, and git mount.",
+    successIcon: "🏁",
+    errorIcon: "🏁💥",
+  },
   "purge-deleted-entities": {
     success: "Deleted registry tombstones purged on prod — rename the live entity, then Recheck.",
     error: "Purge failed — check prod SSH and entity registry backup on prod.",
@@ -46,13 +52,13 @@ const presets: Record<string, ActionToastPreset> = {
     errorIcon: "🪦💥",
   },
   "fix-prod-entity-suffix": {
-    success: "Prod entity id fixed — Recheck the deploy gate, then publish/deploy.",
+    success: "Prod entity id fixed — Recheck Entity Janitor, then publish/deploy.",
     error: "Prod entity id fix failed — registry backup is on prod (.bak-kit-suffix-fix).",
     successIcon: "📺",
     errorIcon: "📺💥",
   },
   "fix-prod-entity-id": {
-    success: "Prod entity id renamed in registry — Recheck the deploy gate, then publish/deploy.",
+    success: "Prod entity id renamed in registry — Recheck Entity Janitor, then publish/deploy.",
     error: "Prod entity rename failed — registry backup is on prod (.bak-kit-entity-rename).",
     successIcon: "⏲️",
     errorIcon: "⏲️💥",
@@ -132,6 +138,32 @@ const presets: Record<string, ActionToastPreset> = {
     successTone: "warn",
   },
 };
+
+/** Best single-line reason from an operation failure (prefers logTail over generic message). */
+export function operationErrorDetail(result: {
+  ok: boolean;
+  message?: string | null;
+  logTail?: string | null;
+}): string | null {
+  if (result.ok) return null;
+
+  const tail = result.logTail?.trim();
+  if (tail) {
+    const lines = tail
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i];
+      if (!/^Step \d+\/\d+/i.test(line)) return line;
+    }
+    return lines.at(-1) ?? null;
+  }
+
+  const message = result.message?.trim();
+  if (message && !/^(action failed|operation failed)$/i.test(message)) return message;
+  return null;
+}
 
 export function actionToast(
   presetKey: keyof typeof presets | string,

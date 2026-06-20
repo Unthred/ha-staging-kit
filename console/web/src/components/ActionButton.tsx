@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { DeployResult, OperationResult } from "../api";
-import { actionToast } from "../lib/toastMessages";
+import { actionToast, operationErrorDetail } from "../lib/toastMessages";
 import { useToast } from "./Toast";
 
 type Result = DeployResult | OperationResult;
@@ -45,7 +45,16 @@ export function ActionButton({
           const fallback = r.message || (r.ok ? "Done" : "Action failed");
           if (toastPreset) {
             const t = actionToast(toastPreset, r.ok, fallback);
-            const message = r.message?.trim() ? r.message : t.message;
+            let message = t.message;
+            if (r.ok && r.message?.trim()) {
+              message = r.message;
+            } else if (!r.ok) {
+              const detail = operationErrorDetail(r);
+              if (detail) {
+                const head = t.message.split(" — ")[0]?.trim() || t.message;
+                message = `${head} — ${detail}`;
+              }
+            }
             push({ message, tone: t.tone, icon: t.icon });
           } else {
             push({ message: fallback, tone: r.ok ? "ok" : "err" });

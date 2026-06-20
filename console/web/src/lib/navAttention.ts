@@ -4,7 +4,7 @@ import type {
   OnboardingStatus,
   ProdStoragePreflightResult,
 } from "../api";
-import { deployProdBlockMessage, getDeployProdState, prodLovelaceBundlePending } from "./gitWorkflow";
+import { deployProdBlockMessage, getDeployProdState, prodLovelaceBundlePending, stagingProdPathPending } from "./gitWorkflow";
 import { isMirrorControlMode } from "./mirrorMode";
 
 export type NavAttentionPath =
@@ -28,7 +28,7 @@ export type NavAttentionItem = {
   /** Operations button / action id */
   opsAction?: OpsAttentionAction;
   /** Diagnostics tab id */
-  diagTab?: "signals" | "ops" | "sync" | "mqtt" | "ha";
+  diagTab?: "signals" | "ops" | "sync" | "person-poll" | "mqtt" | "ha";
   /** Settings sidebar section id */
   settingsSection?: "paths" | "production" | "staging" | "mirror" | "intervals" | "advanced";
   /** Overview workflow slot — used to assign ordered badges on the live page */
@@ -41,11 +41,13 @@ export type OverviewAttentionSlot =
   | "deploy-commit"
   | "deploy-push"
   | "deploy-gate"
+  | "deploy-impact"
   | "deploy-prod";
 
 const OVERVIEW_SLOT_ORDER: OverviewAttentionSlot[] = [
   "ha-errors",
   "deploy-gate",
+  "deploy-impact",
   "parity",
   "deploy-commit",
   "deploy-push",
@@ -53,6 +55,7 @@ const OVERVIEW_SLOT_ORDER: OverviewAttentionSlot[] = [
 ];
 
 export type OpsSection =
+  | "baseline"
   | "entity-deploy"
   | "config-sync"
   | "storage-sync"
@@ -68,6 +71,7 @@ export type OpsAttentionAction =
 
 
 const OPS_ACTION_ORDER: Record<OpsSection, OpsAttentionAction[]> = {
+  baseline: [],
   "entity-deploy": [],
   "config-sync": ["apply-config", "person-poll"],
   "storage-sync": ["storage-sync", "restart-staging"],
@@ -152,15 +156,18 @@ function buildHaDiagnosticsItems(issues: ComponentIssue[]): NavAttentionItem[] {
 }
 
 function buildLogSignalItems(issues: ComponentIssue[]): NavAttentionItem[] {
-  return issues.map((issue, i) => ({
-    id: `diag-signal-${i}-${issue.source}`,
-    path: "/diagnostics" as const,
-    label: issue.message,
-    detail: issue.source,
-    severity: issue.level,
-    diagTab: "signals" as const,
-    anchor: "diag-insights",
-  }));
+  return issues.map((issue, i) => {
+    const isPersonPoll = issue.source.toLowerCase().includes("person poll");
+    return {
+      id: `diag-signal-${i}-${issue.source}`,
+      path: "/diagnostics" as const,
+      label: issue.message,
+      detail: issue.source,
+      severity: issue.level,
+      diagTab: (isPersonPoll ? "person-poll" : "signals") as NavAttentionItem["diagTab"],
+      anchor: isPersonPoll ? undefined : "diag-insights",
+    };
+  });
 }
 
 function buildDeployItems(
@@ -195,8 +202,8 @@ function buildDeployItems(
       id: "deploy-commit",
       path: "/",
       label:
-        (git.stagingAheadOfMain ?? 0) > 0
-          ? `${git.changedFileCount ?? 0} local file(s) not committed — commit before shipping`
+        stagingProdPathPending(git)
+          ? `${git.changedFileCount ?? 0} local file(s) not committed — commit before shipping HA`
           : `${git.changedFileCount ?? 0} local file(s) uncommitted`,
       severity: "warn",
       anchor: "deploy-flow-panel",
@@ -236,7 +243,7 @@ function buildDeployItems(
       push(items, {
         id: "deploy-entity-gate",
         path: "/",
-        label: `${preflight!.deployIssueCount} entity deploy blocker(s) — fix in Operations → Entity deploy gate`,
+        label: `${preflight!.deployIssueCount} entity blocker(s) — fix in Operations → Entity Janitor`,
         severity: "error",
         anchor: "ops-entity-deploy",
         overviewSlot: "deploy-gate",
@@ -259,7 +266,7 @@ function buildDeployItems(
       push(items, {
         id: "deploy-gate-scan",
         path: "/",
-        label: "Entity deploy scan required before release — open Operations → Entity deploy gate",
+        label: "Entity Janitor scan required before release — open Operations → Entity Janitor",
         severity: "warn",
         anchor: "ops-entity-deploy",
         overviewSlot: "deploy-gate",
@@ -401,7 +408,7 @@ function buildOperationsItems(
       push(items, {
         id: "ops-entity-gate-blockers",
         path: "/operations",
-        label: `${preflight!.deployIssueCount} entity deploy blocker(s)`,
+        label: `${preflight!.deployIssueCount} entity blocker(s)`,
         severity: "error",
         anchor: "ops-entity-deploy",
         opsSection: "entity-deploy",
@@ -410,7 +417,7 @@ function buildOperationsItems(
       push(items, {
         id: "ops-entity-gate-scan",
         path: "/operations",
-        label: "Entity deploy scan required before release",
+        label: "Entity Janitor scan required before release",
         severity: "warn",
         anchor: "ops-entity-deploy",
         opsSection: "entity-deploy",
@@ -422,9 +429,10 @@ function buildOperationsItems(
   if (lastPoll && !lastPoll.ok) {
     push(items, {
       id: "person-poll-failed",
-      path: "/operations",
+      path: "/diagnostics",
       label: "Person poll is failing — check staging write token in Settings",
       severity: "warn",
+      diagTab: "person-poll",
       opsSection: "config-sync",
       opsAction: "person-poll",
     });

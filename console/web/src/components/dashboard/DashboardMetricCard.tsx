@@ -32,7 +32,7 @@ export function DashboardMetricCard({
           <span className="dash-metric-pill">{toneLabel(tone)}</span>
         </div>
         <p className="dash-metric-detail">{detail}</p>
-        {meta && <p className="dash-metric-meta">{meta}</p>}
+        {compact ? <p className="dash-metric-meta">{meta ?? "\u00a0"}</p> : meta ? <p className="dash-metric-meta">{meta}</p> : null}
       </div>
     </article>
   );

@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
-import type { ConfigDriftStatus, GitSnapshot } from "../api";
-import { releaseAgentApi } from "../api";
+import type { ConfigDriftStatus, GitSnapshot, ProdStorageDeployGateResult, ReleaseImpactPreviewResult } from "../api";
+import { operationsApi, releaseAgentApi } from "../api";
 import {
   deployProdBlockMessage,
   getDeployProdState,
+  lovelaceOnGithubStaging,
   prodHelperBundlePending,
   prodLovelaceBundlePending,
   prodStorageBundlePending,
+  stagingProdPathPending,
 } from "../lib/gitWorkflow";
-import { gateStatusFromPreflight, type LovelaceGateStatus } from "../lib/entityDeployGate";
-import { useNavAttentionContext } from "../context/NavAttentionContext";
+import { gateStatusFromDeployGate, type LovelaceGateStatus } from "../lib/entityDeployGate";
 import { useReleaseSafety } from "../context/ReleaseSafetyContext";
 
 export type DeployStepState = "done" | "action" | "info" | "blocked";
@@ -23,9 +24,12 @@ export function useDeployFlow({
   configDrift?: ConfigDriftStatus | null;
   onDone?: () => void;
 }) {
-  const { invalidatePreflight, runPreflight, preflightBusy } = useNavAttentionContext();
   const { prodWritesLocked, prodWritesEnabled, lockMessage } = useReleaseSafety();
   const [gateRefreshKey, setGateRefreshKey] = useState(0);
+  const [deployGate, setDeployGate] = useState<ProdStorageDeployGateResult | null>(null);
+  const [deployGateBusy, setDeployGateBusy] = useState(false);
+  const [impactPreview, setImpactPreview] = useState<ReleaseImpactPreviewResult | null>(null);
+  const [impactBusy, setImpactBusy] = useState(false);
   const [releaseHistory, setReleaseHistory] = useState<Awaited<ReturnType<typeof releaseAgentApi.history>> | null>(
     null,
   );
@@ -57,13 +61,24 @@ export function useDeployFlow({
   const deployBlockMsg = deployProdBlockMessage(deployState);
   const stagingOnMain = (git?.stagingAheadOfMain ?? 0) === 0;
   const lovelacePending = prodLovelaceBundlePending(git);
-  const z2mPending = (git?.mainHaFileList ?? []).some((path) =>
-    path.replace(/\\/g, "/").toLowerCase().startsWith("zigbee2mqtt/"),
-  );
-  const gateRelevant = (lovelacePending || z2mPending) && deployState.pending;
-  const gateBlocksDeploy =
-    gateRelevant && !deployBlockMsg && (gateStatus.busy || preflightBusy || gateStatus.ok === false);
-  const canRequestRelease = deployState.canDeploy && !gateBlocksDeploy;
+  const lovelaceOnStagingPending = lovelaceOnGithubStaging(git) && stagingProdPathPending(git);
+  const z2mPending =
+    (git?.mainHaFileList ?? []).some((path) =>
+      path.replace(/\\/g, "/").toLowerCase().startsWith("zigbee2mqtt/"),
+    ) ||
+    (git?.stagingHaFileList ?? []).some((path) =>
+      path.replace(/\\/g, "/").toLowerCase().startsWith("zigbee2mqtt/"),
+    );
+  const gateRelevant =
+    (lovelacePending || lovelaceOnStagingPending || z2mPending) && deployState.pending;
+  const impactRelevant = deployState.canDeploy && deployState.pending && !deployBlockMsg;
+  const releasePreviewBusy =
+    impactBusy || (gateRelevant && (gateStatus.busy || deployGateBusy));
+  const releaseBlocked =
+    impactPreview?.blocksRelease ??
+    (gateRelevant && (gateStatus.busy || deployGateBusy || gateStatus.ok === false));
+  const gateBlocksDeploy = gateRelevant && !deployBlockMsg && (gateStatus.busy || deployGateBusy || gateStatus.ok === false);
+  const canRequestRelease = deployState.canDeploy && !deployBlockMsg && !releaseBlocked && !releasePreviewBusy;
   const canLegacyDeploy = canRequestRelease && !prodWritesLocked;
   const canReleaseRollback =
     (releaseHistory?.releases.length ?? 0) >= 2 && (releaseHistory?.currentIndex ?? 0) > 1;
@@ -73,28 +88,64 @@ export function useDeployFlow({
 
   useEffect(() => {
     if (!gateRelevant) {
-      invalidatePreflight();
+      setDeployGate(null);
       setGateStatus({ active: false, busy: false, ok: null, missingEntityCount: 0 });
       return;
     }
 
     let cancelled = false;
+    setDeployGateBusy(true);
     setGateStatus({ active: true, busy: true, ok: null, missingEntityCount: 0 });
 
-    runPreflight()
+    operationsApi
+      .prodStorageDeployGate()
       .then((result) => {
         if (cancelled) return;
-        setGateStatus(gateStatusFromPreflight(result));
+        setDeployGate(result);
+        setGateStatus(gateStatusFromDeployGate(result));
       })
       .catch(() => {
         if (cancelled) return;
+        setDeployGate(null);
         setGateStatus({ active: true, busy: false, ok: false, missingEntityCount: 0 });
+      })
+      .finally(() => {
+        if (!cancelled) setDeployGateBusy(false);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [gateRelevant, gateRefreshKey, git?.mainAheadOfProdHa, git?.prodLastDeploySha, invalidatePreflight, runPreflight]);
+  }, [gateRelevant, gateRefreshKey, git?.mainAheadOfProdHa, git?.prodLastDeploySha]);
+
+  useEffect(() => {
+    if (!impactRelevant) {
+      setImpactPreview(null);
+      setImpactBusy(false);
+      return;
+    }
+
+    let cancelled = false;
+    setImpactBusy(true);
+
+    releaseAgentApi
+      .impact()
+      .then((impact) => {
+        if (cancelled) return;
+        setImpactPreview(impact);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setImpactPreview(null);
+      })
+      .finally(() => {
+        if (!cancelled) setImpactBusy(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [impactRelevant, gateRefreshKey, git?.mainAheadOfProdHa, git?.prodLastDeploySha]);
 
   useEffect(() => {
     if (!canRequestRelease) {
@@ -103,6 +154,13 @@ export function useDeployFlow({
     }
 
     let cancelled = false;
+    if (impactPreview?.summary) {
+      setRequestReleaseTitle(impactPreview.summary);
+      return () => {
+        cancelled = true;
+      };
+    }
+
     releaseAgentApi
       .plan()
       .then((plan) => {
@@ -123,10 +181,9 @@ export function useDeployFlow({
     return () => {
       cancelled = true;
     };
-  }, [canRequestRelease, gateRefreshKey, git?.mainAheadOfProdHa, git?.prodLastDeploySha]);
+  }, [canRequestRelease, impactPreview?.summary, gateRefreshKey, git?.mainAheadOfProdHa, git?.prodLastDeploySha]);
 
   const bumpGate = () => {
-    invalidatePreflight();
     setGateRefreshKey((k) => k + 1);
     void reloadReleaseHistory();
     onDone?.();
@@ -136,7 +193,7 @@ export function useDeployFlow({
   const step2State: DeployStepState = commitsAhead > 0 ? "action" : "done";
   const step3State: DeployStepState = deployBlockMsg
     ? "blocked"
-    : gateStatus.ok === false
+    : impactPreview?.blocksRelease || gateStatus.ok === false
       ? "blocked"
       : deployState.pending
         ? "action"
@@ -152,18 +209,26 @@ export function useDeployFlow({
 
   const step2Text =
     commitsAhead > 0
-      ? `${commitsAhead} commit${commitsAhead === 1 ? "" : "s"} not on GitHub yet`
+      ? git?.unpushedCommits?.[0]?.subject
+        ? `${commitsAhead} commit${commitsAhead === 1 ? "" : "s"} to push — ${git.unpushedCommits[0].subject}`
+        : `${commitsAhead} commit${commitsAhead === 1 ? "" : "s"} not on GitHub yet`
       : "Staging branch is on GitHub";
 
   let step3Text: string;
   if (deployBlockMsg) {
     step3Text = deployBlockMsg;
+  } else if (impactPreview?.blocksRelease && (impactPreview.deployGate?.deltaBlockerCount ?? 0) > 0) {
+    step3Text = `${impactPreview.deployGate!.deltaBlockerCount} new blocker${impactPreview.deployGate!.deltaBlockerCount === 1 ? "" : "s"} in this release — fix in Operations → Entity Janitor`;
+  } else if (impactPreview?.blocksRelease) {
+    step3Text = "Release blocked — Entity Janitor could not verify prod safely";
   } else if (gateStatus.ok === false && gateStatus.missingEntityCount > 0) {
-    step3Text = `${gateStatus.missingEntityCount} entity blocker${gateStatus.missingEntityCount === 1 ? "" : "s"} — fix in Operations → Entity deploy gate`;
+    step3Text = `${gateStatus.missingEntityCount} new blocker${gateStatus.missingEntityCount === 1 ? "" : "s"} in this release — fix in Operations → Entity Janitor`;
   } else if (gateStatus.ok === false) {
-    step3Text = "Entity deploy scan failed — fix in Operations → Entity deploy gate";
-  } else if ((gateStatus.busy || preflightBusy) && gateRelevant) {
-    step3Text = "Running entity deploy scan against prod…";
+    step3Text = "Entity Janitor failed — fix new blockers in Operations → Entity Janitor";
+  } else if ((releasePreviewBusy || gateStatus.busy || deployGateBusy || impactBusy) && impactRelevant) {
+    step3Text = "Checking release impact against prod…";
+  } else if ((gateStatus.busy || deployGateBusy) && gateRelevant) {
+    step3Text = "Running Entity Janitor scan against prod…";
   } else if (deployState.pendingHaFiles > 0 && (git?.stagingAheadOfMain ?? 0) > 0 && (git?.mainHaChangesForProdHa ?? 0) === 0) {
     step3Text = `${deployState.pendingHaFiles} HA on GitHub staging → merge to main and request release`;
   } else if (deployState.neverDeployed && deployState.pendingHaFiles > 0) {
@@ -202,28 +267,45 @@ export function useDeployFlow({
     requestReleaseTitle ??
     (deployBlockMsg
       ? deployBlockMsg
-      : gateStatus.busy && gateRelevant
-        ? "Running entity deploy scan against prod…"
-        : gateStatus.ok === false
-          ? "Fix entity deploy blockers in Operations → Entity deploy gate"
-          : deployState.pending
-            ? prodWritesLocked
-              ? "Apply GitHub main to prod via release agent (migrations + deploy)"
-              : undefined
-            : "Prod HA is already current");
+      : releasePreviewBusy
+        ? "Checking release impact against prod…"
+        : impactPreview?.blocksRelease
+          ? impactPreview.summary
+          : gateStatus.busy && gateRelevant
+            ? "Running Entity Janitor scan against prod…"
+            : gateStatus.ok === false
+              ? "Fix entity blockers in Operations → Entity Janitor"
+              : deployState.pending
+                ? prodWritesLocked
+                  ? "Apply GitHub main to prod via release agent (migrations + deploy)"
+                  : undefined
+                : "Prod HA is already current");
 
   const legacyDeployTitle = prodWritesLocked ? lockMessage : requestReleaseButtonTitle;
 
   const gateHintVisible =
     gateRelevant &&
     !deployBlockMsg &&
-    (gateStatus.busy || preflightBusy || gateStatus.ok === false || gateStatus.ok === null);
+    (gateStatus.busy ||
+      deployGateBusy ||
+      gateStatus.ok === false ||
+      (deployGate?.preExistingMissingCount ?? 0) > 0);
+
+  const impactPreviewVisible =
+    impactRelevant &&
+    !deployBlockMsg &&
+    (impactBusy || impactPreview !== null);
 
   const allDone = step1State === "done" && step2State === "done" && step3State === "done";
 
   return {
     git,
     gateRefreshKey,
+    deployGate,
+    impactPreview,
+    impactBusy,
+    impactPreviewVisible,
+    releasePreviewBusy,
     gateStatus,
     bumpGate,
     gateRelevant,

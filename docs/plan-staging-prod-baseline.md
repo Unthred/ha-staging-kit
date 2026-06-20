@@ -68,22 +68,28 @@ Prod disk is live truth for YAML until deploy pipeline is fully trusted.
 
 ---
 
-## Phase 2 — Reset workbench (kit)
+## Phase 2 — Baseline from prod (kit)
 
-Clears kit-side WIP and reapplies git + prod `.storage`.
+One-shot clean slate: **prod live → git → GitHub → staging**. Use when git, staging, and prod have drifted and you need all three aligned before new work.
 
-**Kit UI:** Deploy → Entity deploy gate → **Reset workbench…**
+**Kit UI:** Operations → **Baseline from prod**
 
-Or API: `POST /api/operations/reset-workbench`
+Or API: `POST /api/operations/baseline-from-prod`
 
-This:
+This (unlike **Reset workbench**):
 
-- `git reset --hard origin/staging` (+ clean untracked `.storage/` in repo)
-- Clears defer / undo / entity-scan sidecar state
-- Runs `apply-config.sh` (YAML + secrets + **storage sync**)
-- Restarts staging HA container
+- Rsyncs prod YAML + Lovelace/helpers `.storage` into git and commits on `staging`
+- Resets `main` to the same commit and **force-pushes** `origin/main` and `origin/staging`
+- Clears deploy-gate defer/undo/recheck and release history; sets `last-prod-deploy.sha` to the baseline commit
+- Wipes staging recorder DB and **all** of staging `.storage` except auth (kit LLAT / UI login), then runs `apply-config` + prod `.storage` sync, deploys MQTT mirror, restarts staging HA
 
-**Outcome:** Staging disk ≈ prod for registries/Lovelace/helpers; git matches GitHub `staging`.
+**Outcome:** Git deploy payload, staging disk, and prod should describe the same config (except documented staging-only exceptions).
+
+### Reset workbench (lighter)
+
+**Kit UI:** Deploy gate → **Reset workbench…** or `POST /api/operations/reset-workbench`
+
+Resets git to **GitHub `staging` only** (no prod → git export). Use for discarding local WIP, not for a full prod-aligned baseline.
 
 ---
 

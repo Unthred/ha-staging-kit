@@ -71,9 +71,8 @@ export default function SettingsPage() {
     );
   }
 
-  if (!form) return <div className="card">Loading settings…</div>;
-
   const save = async () => {
+    if (!form) return;
     setSaving(true);
     setMessage(null);
     setError(null);
@@ -101,13 +100,14 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="dash ops-page">
+    <div className="dash dash-live-compact ops-page">
       <DashboardHeader
+        compact
         kicker="Settings"
         title={current.title}
         subtitle={current.summary}
-        stagingUrl={form.staging.url}
-        prodUrl={form.prod.url}
+        stagingUrl={form?.staging.url}
+        prodUrl={form?.prod.url}
       />
 
       <div className="layout">
@@ -128,10 +128,14 @@ export default function SettingsPage() {
         <main className="card main-card settings-form" id={`settings-${sectionId}`}>
           <h2>{current.title}</h2>
 
-          {sectionId === "appearance" && <AppearanceSettingsPanel />}
-          {sectionId === "release-safety" && <ReleaseSafetySettingsPanel />}
+          {!form ? (
+            <p className="muted">Loading settings…</p>
+          ) : null}
 
-          {sectionId === "paths" && (
+          {form && sectionId === "appearance" && <AppearanceSettingsPanel />}
+          {form && sectionId === "release-safety" && <ReleaseSafetySettingsPanel />}
+
+          {form && sectionId === "paths" && (
             <>
               <PathsHelpPanel />
               <PathsFormFields
@@ -141,7 +145,7 @@ export default function SettingsPage() {
             </>
           )}
 
-          {sectionId === "production" && (
+          {form && sectionId === "production" && (
             <>
               <p className="muted">
                 Production read token and SSH access. Used for person sync, secrets, and storage sync — not just presence.
@@ -193,7 +197,7 @@ export default function SettingsPage() {
             </>
           )}
 
-          {sectionId === "staging" && (
+          {form && sectionId === "staging" && (
             <>
               {form.stagingTarget && (
                 <div className="staging-target-card card-inset">
@@ -229,7 +233,7 @@ export default function SettingsPage() {
             </>
           )}
 
-          {sectionId === "mirror" && (
+          {form && sectionId === "mirror" && (
             <>
               <p className="muted">Enable if this kit should run the MQTT mirror broker.</p>
               <label className="checkbox">
@@ -276,22 +280,24 @@ export default function SettingsPage() {
                     />
                   </div>
                   {form.mirror.prodMqttHost && (
-                    <TestButton
-                      label="Test prod MQTT TCP"
-                      onTest={() =>
-                        onboardingApi.testMqtt({
-                          prodMqttHost: form.mirror.prodMqttHost,
-                          prodMqttPort: form.mirror.prodMqttPort,
-                        })
-                      }
-                    />
+                    <div className="settings-mirror-test">
+                      <TestButton
+                        label="Test prod MQTT TCP"
+                        onTest={() =>
+                          onboardingApi.testMqtt({
+                            prodMqttHost: form.mirror.prodMqttHost,
+                            prodMqttPort: form.mirror.prodMqttPort,
+                          })
+                        }
+                      />
+                    </div>
                   )}
                 </>
               )}
             </>
           )}
 
-          {sectionId === "intervals" && (
+          {form && sectionId === "intervals" && (
             <>
               <p className="muted">How often the background sync loop polls production and runs storage sync.</p>
               <label>
@@ -343,7 +349,7 @@ export default function SettingsPage() {
             </>
           )}
 
-          {sectionId === "advanced" && (
+          {form && sectionId === "advanced" && (
             <>
               <p className="muted">Optional Docker container name for restarting staging Home Assistant from Operations.</p>
               <label>

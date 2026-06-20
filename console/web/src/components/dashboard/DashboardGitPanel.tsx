@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import type { ConfigDriftStatus, GitSnapshot } from "../../api";
 import { formatRelativeTime } from "../../lib/formatTime";
+import { useStableMinHeight } from "../../hooks/useStableMinHeight";
 import { SectionAttentionBadge } from "../PageAttentionPanel";
 
 /** Slim git ↔ staging apply status for the Environment page (workflow lives on Overview). */
@@ -13,9 +14,12 @@ export function DashboardGitPanel({
   drift?: ConfigDriftStatus | null;
   attentionCount?: number;
 }) {
-  if (!git?.configured) {
+  const panelStable = useStableMinHeight("env-git-panel-v2");
+  const loading = git == null;
+
+  if (!loading && !git.configured) {
     return (
-      <section className="dash-panel dash-config-repo-panel">
+      <section ref={panelStable.ref} style={panelStable.style} className="dash-panel dash-config-repo-panel">
         <header className="dash-panel-head">
           <div>
             <p className="dash-panel-eyebrow">Git ↔ staging</p>
@@ -33,9 +37,32 @@ export function DashboardGitPanel({
   }
 
   const inSync = drift && !drift.hasDrift;
+  const showApplyLinks = Boolean(drift?.hasDrift && drift.applyGapHasHaChanges);
+  const showDocsHint = Boolean(drift?.hasDrift && drift.lastAppliedCommit && !drift.applyGapHasHaChanges);
+  const showUncommitted = Boolean(!loading && git && (git.isHaDirty || git.isRepoDirty));
+
+  const bannerTitle = loading
+    ? "Loading git status…"
+    : drift?.hasDrift
+      ? "Apply pending"
+      : "Staging disk matches git";
+
+  const bannerDetail = loading ? "—" : (drift?.detail ?? git?.commitSubject ?? "—");
+
+  const footerContent = loading
+    ? null
+    : showUncommitted
+      ? (
+          <>
+            Uncommitted — <Link to="/">Overview</Link>
+          </>
+        )
+      : showDocsHint
+        ? "Docs-only drift — staging YAML already at last apply."
+        : null;
 
   return (
-    <section className="dash-panel dash-config-repo-panel">
+    <section ref={panelStable.ref} style={panelStable.style} className="dash-panel dash-config-repo-panel">
       <header className="dash-panel-head dash-panel-head-tight">
         <div>
           <p className="dash-panel-eyebrow">Git ↔ staging</p>
@@ -45,31 +72,40 @@ export function DashboardGitPanel({
           </h3>
         </div>
         <div className="dash-config-repo-head-actions">
-          <div className="dash-git-badges">
-            {git.isHaDirty && (
+          <div className="dash-git-badges dash-git-badges-reserved">
+            {!loading && git?.isHaDirty && (
               <span className="dash-badge dash-badge-warn">
                 {git.haChangedFileCount} HA YAML uncommitted
               </span>
             )}
-            {git.isRepoDirty && (
+            {!loading && git?.isRepoDirty && (
               <span className="dash-badge dash-badge-info">
                 {git.repoChangedFileCount} docs uncommitted
               </span>
             )}
-            {drift?.hasDrift && <span className="dash-badge dash-badge-warn">Apply pending</span>}
-            {inSync && !drift?.hasDrift && <span className="dash-badge dash-badge-ok">Applied</span>}
+            {!loading && drift?.hasDrift && <span className="dash-badge dash-badge-warn">Apply pending</span>}
+            {!loading && inSync && !drift?.hasDrift && <span className="dash-badge dash-badge-ok">Applied</span>}
           </div>
         </div>
       </header>
 
-      {drift ? (
-        <div
-          className={`dash-config-apply-banner ${drift.hasDrift ? "dash-config-apply-banner-warn" : "dash-config-apply-banner-ok"}`}
-        >
-          <p className="dash-config-apply-title">{drift.hasDrift ? "Apply pending" : "Staging disk matches git"}</p>
-          <p className="dash-config-apply-detail">{drift.detail}</p>
-          {drift.repoCommit && (
-            <p className="dash-config-apply-meta muted">
+      <div
+        className={`dash-config-apply-banner dash-config-apply-banner-shell${
+          loading
+            ? " dash-config-apply-banner-ok dash-config-apply-banner-skeleton"
+            : drift?.hasDrift
+              ? " dash-config-apply-banner-warn"
+              : " dash-config-apply-banner-ok"
+        }`}
+        aria-busy={loading}
+      >
+        <p className="dash-config-apply-title">{bannerTitle}</p>
+        <p className="dash-config-apply-detail">{bannerDetail}</p>
+        <p className="dash-config-apply-meta muted">
+          {loading ? (
+            "—"
+          ) : drift?.repoCommit ? (
+            <>
               Git HEAD <code>{drift.repoCommit}</code>
               {drift.lastAppliedCommit ? (
                 <>
@@ -79,49 +115,32 @@ export function DashboardGitPanel({
               ) : (
                 " · never applied to staging"
               )}
-            </p>
+            </>
+          ) : git?.commitHash ? (
+            <>
+              Git HEAD <code>{git.commitHash}</code>
+              {git.commitDate ? <> · committed {formatRelativeTime(git.commitDate)}</> : null}
+            </>
+          ) : (
+            "—"
           )}
-          {drift.hasDrift && drift.applyGapHasHaChanges && (
-            <p className="dash-config-apply-link">
+        </p>
+        <p className="dash-config-apply-link dash-config-apply-link-reserved">
+          {showApplyLinks ? (
+            <>
               <Link to="/">Reload from repo on Overview</Link>
               {" · "}
               <Link to="/">Ship workflow on Overview</Link>
-            </p>
+            </>
+          ) : (
+            "\u00a0"
           )}
-        </div>
-      ) : (
-        <dl className="dash-kv dash-kv-compact">
-          <div>
-            <dt>Git HEAD</dt>
-            <dd>
-              <code>{git.commitHash ?? "—"}</code>
-              {git.commitSubject ? <> · {git.commitSubject}</> : null}
-            </dd>
-          </div>
-          <div>
-            <dt>Committed</dt>
-            <dd>{git.commitDate ? formatRelativeTime(git.commitDate) : "—"}</dd>
-          </div>
-        </dl>
-      )}
-
-      {syncActivityHint(drift)}
-
-      {(git.isHaDirty || git.isRepoDirty) && (
-        <p className="muted dash-config-repo-note dash-config-repo-note-compact">
-          Uncommitted — <Link to="/">Overview</Link>
         </p>
-      )}
-    </section>
-  );
-}
+      </div>
 
-function syncActivityHint(drift?: ConfigDriftStatus | null) {
-  if (!drift?.hasDrift || !drift.lastAppliedCommit) return null;
-  if (drift.applyGapHasHaChanges) return null;
-  return (
-    <p className="muted dash-config-repo-note dash-config-repo-note-compact">
-      Docs-only drift — staging YAML already at last apply.
-    </p>
+      {footerContent ? (
+        <p className="muted dash-config-repo-note dash-config-repo-note-compact">{footerContent}</p>
+      ) : null}
+    </section>
   );
 }

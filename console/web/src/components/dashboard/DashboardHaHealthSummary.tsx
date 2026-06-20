@@ -47,7 +47,7 @@ export function DashboardHaHealthSummary({
         </Link>
       </header>
 
-      <div className={`dash-ha-health-visual${isChart ? " dash-ha-health-visual--chart" : ""}`}>
+      <div className={`dash-ha-health-visual${isChart ? " dash-ha-health-visual--chart dash-live-chart-plot" : ""}`}>
         <div className={`dash-ha-health-stat dash-ha-health-stat--error ${errors === 0 ? "is-zero" : ""}`}>
           <span className="dash-ha-health-stat-value">{errors}</span>
           <span className="dash-ha-health-stat-label">Errors</span>

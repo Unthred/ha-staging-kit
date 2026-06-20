@@ -46,6 +46,27 @@ public sealed partial class DashboardBuilder(
         if (int.TryParse(aheadRaw, out var a)) ahead = a;
         if (int.TryParse(behindRaw, out var b)) behind = b;
 
+        var unpushedRemoteRef = $"origin/{trackingBranch}";
+        IReadOnlyList<GitUnpushedCommitPreview> unpushedCommits = [];
+        IReadOnlyList<string> unpushedHaFiles = [];
+        IReadOnlyList<string> unpushedRepoFiles = [];
+        if (ahead is > 0)
+        {
+            var unpushedLog = await RunGitAsync(
+                "/repo",
+                "log",
+                $"{unpushedRemoteRef}..HEAD",
+                "--format=%h%x1f%s%x1f%cI");
+            unpushedCommits = ParseUnpushedCommits(unpushedLog);
+
+            var unpushedDiff = await RunGitAsync("/repo", "diff", "--name-only", $"{unpushedRemoteRef}..HEAD");
+            var unpushedFiles = unpushedDiff
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .ToList();
+            unpushedHaFiles = unpushedFiles.Where(IsHaDeployPath).ToList();
+            unpushedRepoFiles = unpushedFiles.Where(f => !IsHaDeployPath(f)).ToList();
+        }
+
         // Staging → main gap: commits on origin/staging not yet merged to origin/main
         int? stagingAheadOfMain = null;
         var stagingHaChanges = 0;
@@ -150,7 +171,68 @@ public sealed partial class DashboardBuilder(
             mainStorageFileList,
             prodDeployTracked,
             string.IsNullOrWhiteSpace(lastDeployedSha) ? null : lastDeployedSha,
-            prodPreviousDeploySha);
+            prodPreviousDeploySha,
+            unpushedCommits,
+            unpushedHaFiles,
+            unpushedRepoFiles,
+            ahead is > 0 ? unpushedRemoteRef : null);
+    }
+
+    static IReadOnlyList<GitUnpushedCommitPreview> ParseUnpushedCommits(string log)
+    {
+        if (string.IsNullOrWhiteSpace(log))
+            return [];
+
+        var commits = new List<GitUnpushedCommitPreview>();
+        foreach (var line in log.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var parts = line.Split('\x1f');
+            if (parts.Length < 2)
+                continue;
+
+            DateTimeOffset? committedAt = null;
+            if (parts.Length >= 3
+                && DateTimeOffset.TryParse(parts[2], CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed))
+            {
+                committedAt = parsed;
+            }
+
+            commits.Add(new GitUnpushedCommitPreview(parts[0].Trim(), parts[1].Trim(), committedAt));
+        }
+
+        return commits;
+    }
+
+    public async Task<GitFileDiffResult?> GetUnpushedFileDiffAsync(string relativePath, CancellationToken ct)
+    {
+        if (!Directory.Exists("/repo/.git"))
+            return null;
+
+        relativePath = relativePath.Replace('\\', '/').TrimStart('/');
+        if (string.IsNullOrWhiteSpace(relativePath) || relativePath.Contains("..", StringComparison.Ordinal))
+            return null;
+
+        var fullPath = Path.GetFullPath(Path.Combine("/repo", relativePath));
+        if (!fullPath.StartsWith("/repo/", StringComparison.Ordinal))
+            return null;
+
+        var branch = EnvFile.Get(paths.EnvFile, "HA_BRANCH") ?? "staging";
+        var currentBranch = await RunGitAsync("/repo", "rev-parse", "--abbrev-ref", "HEAD");
+        var trackingBranch = string.IsNullOrWhiteSpace(currentBranch) ? branch : currentBranch;
+        var remoteRef = $"origin/{trackingBranch}";
+
+        var diff = await RunGitAsync("/repo", "diff", $"{remoteRef}..HEAD", "--", relativePath);
+        if (string.IsNullOrWhiteSpace(diff))
+        {
+            diff =
+                $"(No diff for {relativePath} in commits queued to push — file unchanged between {remoteRef} and HEAD.)";
+        }
+
+        const int maxChars = 120_000;
+        if (diff.Length > maxChars)
+            diff = diff[..maxChars] + "\n\n… diff truncated …";
+
+        return new GitFileDiffResult(relativePath, "modified", diff);
     }
 
     static (int HaCount, int RepoCount, IReadOnlyList<string> HaSamples, IReadOnlyList<string> RepoSamples, IReadOnlyList<string> HaFiles, IReadOnlyList<string> RepoFiles) ClassifyGitStatus(
@@ -854,11 +936,348 @@ public sealed partial class DashboardBuilder(
             diffs);
     }
 
+    public async Task<AutomationGitGapSnapshot?> GetAutomationGitGapAsync(CancellationToken ct)
+    {
+        const string repo = "/repo";
+        if (!Directory.Exists(Path.Combine(repo, ".git")))
+            return null;
+
+        var gitIds = CollectGitAutomationIds(repo);
+        var (stagingUrl, stagingToken) = TokenFile.Read(paths.StagingTokenFile);
+        if (string.IsNullOrWhiteSpace(stagingUrl) || string.IsNullOrWhiteSpace(stagingToken))
+            return new AutomationGitGapSnapshot(false, gitIds.Count, 0, 0, []);
+
+        var haAutomations = await FetchAutomationEntitiesAsync(stagingUrl, stagingToken, ct);
+        if (haAutomations is null)
+            return new AutomationGitGapSnapshot(false, gitIds.Count, 0, 0, []);
+
+        var missing = haAutomations
+            .Where(a => !gitIds.Contains(a.Id))
+            .OrderBy(a => a.Alias, StringComparer.OrdinalIgnoreCase)
+            .Select(a => new AutomationGitGapRow(
+                a.Id,
+                a.EntityId,
+                a.Alias,
+                "Loaded on prod/staging HA but not in git YAML — created or edited in HA UI and not exported to automations.yaml/packages"))
+            .ToList();
+
+        return new AutomationGitGapSnapshot(true, gitIds.Count, haAutomations.Count, missing.Count, missing);
+    }
+
+    public async Task<EntityParityDetailSnapshot?> GetEntityParityDetailsAsync(string domain, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(domain))
+            return null;
+
+        var (prodUrl, prodToken) = TokenFile.Read(paths.ProdTokenFile);
+        var (stagingUrl, stagingToken) = TokenFile.Read(paths.StagingTokenFile);
+        if (string.IsNullOrWhiteSpace(prodUrl) || string.IsNullOrWhiteSpace(prodToken)
+            || string.IsNullOrWhiteSpace(stagingUrl) || string.IsNullOrWhiteSpace(stagingToken))
+        {
+            return null;
+        }
+
+        var prodStates = await FetchStateMapAsync(prodUrl, prodToken, ct);
+        var stagingStates = await FetchStateMapAsync(stagingUrl, stagingToken, ct);
+        if (prodStates is null || stagingStates is null)
+            return null;
+
+        var stagingRegistry = LoadRegistryLookup();
+        var prefix = $"{domain}.";
+        var prodOnlyIds = prodStates.Keys
+            .Where(id => id.StartsWith(prefix, StringComparison.Ordinal))
+            .Except(stagingStates.Keys.Where(id => id.StartsWith(prefix, StringComparison.Ordinal)))
+            .Order(StringComparer.Ordinal)
+            .ToList();
+        var stagingOnlyIds = stagingStates.Keys
+            .Where(id => id.StartsWith(prefix, StringComparison.Ordinal))
+            .Except(prodStates.Keys.Where(id => id.StartsWith(prefix, StringComparison.Ordinal)))
+            .Order(StringComparer.Ordinal)
+            .ToList();
+
+        var prodOnlyRows = prodOnlyIds
+            .Select(id => BuildParityDetailRow(id, prodStates, stagingStates, stagingRegistry, domain))
+            .ToList();
+        var stagingOnlyRows = stagingOnlyIds
+            .Select(id => BuildParityDetailRow(id, prodStates, stagingStates, stagingRegistry, domain))
+            .ToList();
+
+        var categories = prodOnlyRows
+            .GroupBy(r => r.Category)
+            .Select(g => new EntityParityCategorySummary(
+                g.Key,
+                ParityCategoryLabel(g.Key),
+                g.Count()))
+            .OrderByDescending(c => c.Count)
+            .ToList();
+
+        return new EntityParityDetailSnapshot(
+            true,
+            domain,
+            prodOnlyIds.Count,
+            stagingOnlyIds.Count,
+            prodOnlyRows,
+            stagingOnlyRows,
+            categories);
+    }
+
+    public async Task<LovelaceDriftStatus> GetLovelaceDriftStatusAsync(CancellationToken ct)
+    {
+        var baseStatus = stagingUiCapture.GetLovelaceDriftStatus();
+        if (!baseStatus.Available)
+            return baseStatus;
+
+        var changedPaths = await ListStagingProdLovelaceChangedPathsAsync(ct);
+        var prodTarget = ParseProdSshTarget();
+        if (prodTarget is null)
+        {
+            return baseStatus with
+            {
+                ChangedPaths = changedPaths,
+                Detail = changedPaths.Count > 0
+                    ? $"{changedPaths.Count} Lovelace file(s) differ between staging HA and prod — prod SSH not configured for live compare."
+                    : baseStatus.StagingDiffersFromRepo
+                        ? $"{baseStatus.Detail} Prod SSH not configured — cannot compare live prod dashboard."
+                        : baseStatus.Detail,
+            };
+        }
+
+        var (userHost, configPath) = prodTarget.Value;
+        var remotePath = $"{configPath.TrimEnd('/')}/.storage/lovelace.lovelace";
+        var (ok, json, _) = await RunSshCatAsync(userHost, remotePath, ct);
+        if (!ok || string.IsNullOrWhiteSpace(json))
+        {
+            return baseStatus with
+            {
+                ChangedPaths = changedPaths,
+                Detail = changedPaths.Count > 0
+                    ? $"{changedPaths.Count} Lovelace file(s) differ between staging HA and prod — could not read prod Lovelace over SSH."
+                    : baseStatus.StagingDiffersFromRepo
+                        ? $"{baseStatus.Detail} Could not read prod Lovelace over SSH."
+                        : baseStatus.Detail,
+            };
+        }
+
+        string? prodTitle = null;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (StagingUiCapture.TryReadTitleFromNode(doc.RootElement, out var title))
+                prodTitle = title;
+        }
+        catch
+        {
+            /* best effort */
+        }
+
+        var stagingDiffersFromProd = changedPaths.Count > 0
+            || (!string.IsNullOrWhiteSpace(baseStatus.StagingTitle)
+                && !string.IsNullOrWhiteSpace(prodTitle)
+                && !string.Equals(baseStatus.StagingTitle, prodTitle, StringComparison.Ordinal));
+
+        var detail = stagingDiffersFromProd
+            ? changedPaths.Count > 0
+                ? $"{changedPaths.Count} Lovelace file(s) differ between staging HA and prod."
+                : $"Staging dashboard title is “{baseStatus.StagingTitle}” but prod is “{prodTitle}”."
+            : baseStatus.StagingDiffersFromRepo
+                ? $"Staging HA dashboard ({baseStatus.StagingTitle ?? "unknown"}) differs from git workbench ({baseStatus.RepoTitle ?? "unknown"})."
+                : "Staging HA dashboard matches git workbench and prod.";
+
+        return baseStatus with
+        {
+            StagingDiffersFromProd = stagingDiffersFromProd,
+            ProdTitle = prodTitle,
+            ChangedPaths = changedPaths,
+            Detail = detail,
+        };
+    }
+
+    public async Task<GitFileDiffResult?> GetStagingProdLovelaceFileDiffAsync(string relativePath, CancellationToken ct)
+    {
+        relativePath = relativePath.Replace('\\', '/').TrimStart('/');
+        if (string.IsNullOrWhiteSpace(relativePath)
+            || relativePath.Contains("..", StringComparison.Ordinal)
+            || !ProdStorageDeployService.LovelaceBundlePaths.Any(p =>
+                string.Equals(p, relativePath, StringComparison.OrdinalIgnoreCase)))
+        {
+            return null;
+        }
+
+        var stagingPath = ResolveStagingLovelaceDiskPath(relativePath);
+        if (stagingPath is null || !File.Exists(stagingPath))
+            return new GitFileDiffResult(relativePath, "missing", $"(Staging file not found: {relativePath})");
+
+        var prodTarget = ParseProdSshTarget();
+        if (prodTarget is null)
+            return new GitFileDiffResult(relativePath, "missing", "(Prod SSH not configured — cannot load prod dashboard file.)");
+
+        var (userHost, configPath) = prodTarget.Value;
+        var remotePath = $"{configPath.TrimEnd('/')}/{relativePath}";
+        var (ok, prodContent, stderr) = await RunSshCatAsync(userHost, remotePath, ct);
+        if (!ok)
+        {
+            return new GitFileDiffResult(
+                relativePath,
+                "missing",
+                $"(Could not read prod file over SSH: {stderr})");
+        }
+
+        var stagingContent = await File.ReadAllTextAsync(stagingPath, ct);
+        var diff = await BuildUnifiedDiffAsync(
+            relativePath,
+            "production",
+            prodContent,
+            "staging HA",
+            stagingContent,
+            ct);
+
+        const int maxChars = 120_000;
+        if (diff.Length > maxChars)
+            diff = diff[..maxChars] + "\n\n… diff truncated …";
+
+        return new GitFileDiffResult(relativePath, "modified", diff);
+    }
+
+    async Task<IReadOnlyList<string>> ListStagingProdLovelaceChangedPathsAsync(CancellationToken ct)
+    {
+        var changed = new List<string>();
+        var prodTarget = ParseProdSshTarget();
+        if (prodTarget is null)
+            return changed;
+
+        var (userHost, configPath) = prodTarget.Value;
+        foreach (var relativePath in ProdStorageDeployService.LovelaceBundlePaths)
+        {
+            var stagingPath = ResolveStagingLovelaceDiskPath(relativePath);
+            if (stagingPath is null || !File.Exists(stagingPath))
+                continue;
+
+            var remotePath = $"{configPath.TrimEnd('/')}/{relativePath}";
+            var (ok, prodContent, _) = await RunSshCatAsync(userHost, remotePath, ct);
+            if (!ok)
+                continue;
+
+            var stagingContent = await File.ReadAllTextAsync(stagingPath, ct);
+            if (!string.Equals(stagingContent, prodContent, StringComparison.Ordinal))
+                changed.Add(relativePath);
+        }
+
+        return changed;
+    }
+
+    string? ResolveStagingLovelaceDiskPath(string relativePath)
+    {
+        var normalized = relativePath.Replace('\\', '/').TrimStart('/');
+        if (!normalized.StartsWith(".storage/", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        var haConfig = EnvFile.Get(paths.ConfigEnvFile, "HA_CONFIG") ?? "/ha-config";
+        return Path.Combine(haConfig, normalized);
+    }
+
+    async Task<string> BuildUnifiedDiffAsync(
+        string labelPath,
+        string leftLabel,
+        string left,
+        string rightLabel,
+        string right,
+        CancellationToken ct)
+    {
+        if (string.Equals(left, right, StringComparison.Ordinal))
+            return $"(No diff — {labelPath} is identical on staging HA and prod.)";
+
+        var leftFile = Path.Combine(Path.GetTempPath(), $"ha-kit-diff-left-{Guid.NewGuid():N}");
+        var rightFile = Path.Combine(Path.GetTempPath(), $"ha-kit-diff-right-{Guid.NewGuid():N}");
+        try
+        {
+            await File.WriteAllTextAsync(leftFile, left, ct);
+            await File.WriteAllTextAsync(rightFile, right, ct);
+            var (ok, stdout, stderr) = await RunBashAsync(
+                $"diff -u --label {ShQ($"{leftLabel}:{labelPath}")} --label {ShQ($"{rightLabel}:{labelPath}")} {ShQ(leftFile)} {ShQ(rightFile)} || true",
+                ct);
+            if (!ok && string.IsNullOrWhiteSpace(stdout))
+                return $"(Could not build diff: {stderr})";
+            return string.IsNullOrWhiteSpace(stdout) ? $"(No diff for {labelPath}.)" : stdout;
+        }
+        finally
+        {
+            try { File.Delete(leftFile); } catch { /* ignore */ }
+            try { File.Delete(rightFile); } catch { /* ignore */ }
+        }
+    }
+
+    async Task<(bool Ok, string Stdout, string Stderr)> RunBashAsync(string script, CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo("bash")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        psi.ArgumentList.Add("-c");
+        psi.ArgumentList.Add(script);
+        gitSsh.Apply(psi);
+        using var proc = Process.Start(psi);
+        if (proc is null)
+            return (false, "", "Failed to start bash");
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync(ct);
+        var stderrTask = proc.StandardError.ReadToEndAsync(ct);
+        await proc.WaitForExitAsync(ct);
+        return (true, (await stdoutTask).Trim(), (await stderrTask).Trim());
+    }
+
+    (string UserHost, string ConfigPath)? ParseProdSshTarget()
+    {
+        var haSecrets = EnvFile.Get(paths.EnvFile, "HA_SECRETS") ?? "";
+        if (string.IsNullOrWhiteSpace(haSecrets))
+            return null;
+
+        var colonIdx = haSecrets.IndexOf(':');
+        var userHost = colonIdx > 0 ? haSecrets[..colonIdx] : haSecrets;
+        var remotePath = colonIdx > 0 ? haSecrets[(colonIdx + 1)..] : "";
+        var configPath = remotePath.EndsWith("/secrets.yaml", StringComparison.OrdinalIgnoreCase)
+            ? remotePath[..^"/secrets.yaml".Length]
+            : remotePath.TrimEnd('/');
+
+        if (string.IsNullOrWhiteSpace(configPath))
+            configPath = "/config";
+        if (!userHost.Contains('@'))
+            userHost = $"root@{userHost}";
+        return (userHost, configPath);
+    }
+
+    async Task<(bool Ok, string Stdout, string Stderr)> RunSshCatAsync(
+        string userHost,
+        string remotePath,
+        CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo("bash")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        psi.ArgumentList.Add("-c");
+        psi.ArgumentList.Add(
+            $"ssh -i {ShQ(paths.SshKeyFile)} -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=30 {ShQ(userHost)} cat {ShQ(remotePath)}");
+        gitSsh.Apply(psi);
+        using var proc = Process.Start(psi);
+        if (proc is null)
+            return (false, "", "Failed to start ssh");
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync(ct);
+        var stderrTask = proc.StandardError.ReadToEndAsync(ct);
+        await proc.WaitForExitAsync(ct);
+        return (proc.ExitCode == 0, (await stdoutTask).Trim(), (await stderrTask).Trim());
+    }
+
+    static string ShQ(string s) => "'" + s.Replace("'", "'\\''") + "'";
+
     public StagingRepresentationStatus BuildStagingRepresentation(
         GitSnapshotStatus? git,
         ConfigDriftStatus? drift,
         EntityParitySnapshot? entityParity,
-        PresenceSummary? presence)
+        PresenceSummary? presence,
+        LovelaceDriftStatus? lovelaceDrift = null)
     {
         var issues = new List<RepresentationIssue>();
         // Docs/scripts commits after last apply do not change staging HA YAML — only never-applied or HA gaps are real drift.
@@ -872,6 +1291,8 @@ public sealed partial class DashboardBuilder(
         };
         var gitClean = git is not { IsHaDirty: true };
         var entityAligned = entityParity is not { Available: true } || entityParity.IsAligned;
+        var lovelaceAligned = lovelaceDrift is not { Available: true }
+            || (!lovelaceDrift.StagingDiffersFromProd && !lovelaceDrift.StagingDiffersFromRepo);
         var presenceMatches = presence is null
             || (presence.ProdPersonCount == presence.StagingPersonCount
                 && presence.MatchedCount == presence.ProdPersonCount);
@@ -948,6 +1369,31 @@ public sealed partial class DashboardBuilder(
                 git.RepoChangedSample));
         }
 
+        if (lovelaceDrift is { Available: true, StagingDiffersFromProd: true })
+        {
+            issues.Add(new RepresentationIssue(
+                "warn",
+                "lovelace",
+                "Dashboard differs from production",
+                lovelaceDrift.Detail,
+                new[] { lovelaceDrift.StagingTitle, lovelaceDrift.ProdTitle }
+                    .Where(s => !string.IsNullOrWhiteSpace(s))
+                    .Select(s => s!)
+                    .ToList()));
+        }
+        else if (lovelaceDrift is { Available: true, StagingDiffersFromRepo: true })
+        {
+            issues.Add(new RepresentationIssue(
+                "warn",
+                "lovelace",
+                "Staging dashboard differs from git workbench",
+                lovelaceDrift.Detail,
+                new[] { lovelaceDrift.StagingTitle, lovelaceDrift.RepoTitle }
+                    .Where(s => !string.IsNullOrWhiteSpace(s))
+                    .Select(s => s!)
+                    .ToList()));
+        }
+
         string verdict;
         string headline;
         string summary;
@@ -985,14 +1431,14 @@ public sealed partial class DashboardBuilder(
             headline = "Staging matches production — pending HA YAML commits";
             summary = "Applied staging config matches production today. Uncommitted automations/scripts are not on staging yet.";
         }
-        else if (git is { IsRepoDirty: true } && configMatches && entityAligned && presenceMatches)
+        else if (git is { IsRepoDirty: true } && configMatches && entityAligned && lovelaceAligned && presenceMatches)
         {
             verdict = "aligned";
             headline = "Staging matches production";
             summary =
                 $"Prod/staging parity is good. {git.RepoChangedFileCount} doc or tooling file(s) uncommitted in git — safe to ignore for HA testing.";
         }
-        else if (configMatches && entityAligned && presenceMatches && gitClean)
+        else if (configMatches && entityAligned && lovelaceAligned && presenceMatches && gitClean)
         {
             verdict = "aligned";
             headline = "Staging matches production";
@@ -1036,6 +1482,7 @@ public sealed partial class DashboardBuilder(
             summary,
             configMatches,
             entityAligned,
+            lovelaceAligned,
             presenceMatches,
             gitClean,
             issues);
@@ -1344,7 +1791,7 @@ public sealed partial class DashboardBuilder(
         {
             return new SuggestedAction(
                 "Person poll cannot reach production",
-                personPollIssue.Message + " Open Diagnostics for the sync log and poll history.",
+                personPollIssue.Message + " Open Diagnostics → Person poll tab for log and history.",
                 "/diagnostics",
                 "Open Diagnostics",
                 "warning",
@@ -1510,6 +1957,236 @@ public sealed partial class DashboardBuilder(
             return null;
         }
     }
+
+    async Task<Dictionary<string, string>?> FetchStateMapAsync(string url, string token, CancellationToken ct)
+    {
+        try
+        {
+            var client = httpClientFactory.CreateClient();
+            client.Timeout = TimeSpan.FromSeconds(15);
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            using var response = await client.GetAsync($"{url.TrimEnd('/')}/api/states", ct);
+            if (!response.IsSuccessStatusCode)
+                return null;
+
+            await using var stream = await response.Content.ReadAsStreamAsync(ct);
+            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array)
+                return null;
+
+            var map = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var item in doc.RootElement.EnumerateArray())
+            {
+                if (!item.TryGetProperty("entity_id", out var idProp))
+                    continue;
+                var id = idProp.GetString();
+                if (string.IsNullOrWhiteSpace(id))
+                    continue;
+                var state = item.TryGetProperty("state", out var stateProp) ? stateProp.GetString() ?? "" : "";
+                map[id] = state;
+            }
+
+            return map;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    async Task<IReadOnlyList<HaAutomationRow>?> FetchAutomationEntitiesAsync(string url, string token, CancellationToken ct)
+    {
+        try
+        {
+            var client = httpClientFactory.CreateClient();
+            client.Timeout = TimeSpan.FromSeconds(15);
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            using var response = await client.GetAsync($"{url.TrimEnd('/')}/api/states", ct);
+            if (!response.IsSuccessStatusCode)
+                return null;
+
+            await using var stream = await response.Content.ReadAsStreamAsync(ct);
+            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array)
+                return null;
+
+            var rows = new List<HaAutomationRow>();
+            foreach (var item in doc.RootElement.EnumerateArray())
+            {
+                if (!item.TryGetProperty("entity_id", out var idProp))
+                    continue;
+                var entityId = idProp.GetString();
+                if (string.IsNullOrWhiteSpace(entityId) || !entityId.StartsWith("automation.", StringComparison.Ordinal))
+                    continue;
+
+                var attrs = item.TryGetProperty("attributes", out var attrsProp) ? attrsProp : default;
+                var id = attrs.ValueKind == JsonValueKind.Object && attrs.TryGetProperty("id", out var automationIdProp)
+                    ? automationIdProp.ToString()
+                    : entityId;
+                var alias = attrs.ValueKind == JsonValueKind.Object
+                    ? FirstNonEmpty(
+                        attrs.TryGetProperty("friendly_name", out var fn) ? fn.GetString() : null,
+                        attrs.TryGetProperty("alias", out var aliasProp) ? aliasProp.GetString() : null,
+                        entityId)
+                    : entityId;
+                rows.Add(new HaAutomationRow(NormalizeAutomationId(id), entityId, alias ?? entityId));
+            }
+
+            return rows;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    static HashSet<string> CollectGitAutomationIds(string repo)
+    {
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        AddAutomationIdsFromFile(ids, Path.Combine(repo, "automations.yaml"));
+        var packagesDir = Path.Combine(repo, "packages");
+        if (Directory.Exists(packagesDir))
+        {
+            foreach (var file in Directory.GetFiles(packagesDir, "*.yaml", SearchOption.AllDirectories))
+                AddAutomationIdsFromFile(ids, file);
+        }
+
+        return ids;
+    }
+
+    static void AddAutomationIdsFromFile(HashSet<string> ids, string path)
+    {
+        if (!File.Exists(path))
+            return;
+
+        foreach (var line in File.ReadLines(path))
+        {
+            var trimmed = line.Trim();
+            if (!trimmed.Contains("- id:", StringComparison.Ordinal))
+                continue;
+            var value = trimmed[(trimmed.IndexOf("- id:", StringComparison.Ordinal) + 5)..].Trim();
+            value = value.Trim('\'', '"', ' ');
+            if (!string.IsNullOrWhiteSpace(value))
+                ids.Add(NormalizeAutomationId(value));
+        }
+    }
+
+    static string NormalizeAutomationId(string value) => value.Trim().Trim('\'', '"');
+
+    Dictionary<string, RegistryEntityInfo> LoadRegistryLookup()
+    {
+        var haConfig = EnvFile.Get(paths.ConfigEnvFile, "HA_CONFIG") ?? "/ha-config";
+        var registryPath = Path.Combine(haConfig, ".storage", "core.entity_registry");
+        var lookup = new Dictionary<string, RegistryEntityInfo>(StringComparer.Ordinal);
+        if (!File.Exists(registryPath))
+            return lookup;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(registryPath));
+            if (!doc.RootElement.TryGetProperty("data", out var data))
+                return lookup;
+
+            LoadRegistryArray(lookup, data, "entities", false);
+            LoadRegistryArray(lookup, data, "deleted_entities", true);
+        }
+        catch
+        {
+            /* best effort */
+        }
+
+        return lookup;
+    }
+
+    static void LoadRegistryArray(
+        Dictionary<string, RegistryEntityInfo> lookup,
+        JsonElement data,
+        string key,
+        bool orphaned)
+    {
+        if (!data.TryGetProperty(key, out var array) || array.ValueKind != JsonValueKind.Array)
+            return;
+
+        foreach (var item in array.EnumerateArray())
+        {
+            var entityId = item.TryGetProperty("entity_id", out var idProp) ? idProp.GetString() : null;
+            if (string.IsNullOrWhiteSpace(entityId))
+                continue;
+
+            var platform = item.TryGetProperty("platform", out var platformProp) ? platformProp.GetString() : null;
+            var isOrphaned = orphaned
+                || (item.TryGetProperty("orphaned_timestamp", out var orphanProp)
+                    && orphanProp.ValueKind != JsonValueKind.Null);
+            lookup[entityId] = new RegistryEntityInfo(platform, isOrphaned);
+        }
+    }
+
+    static EntityParityDetailRow BuildParityDetailRow(
+        string entityId,
+        Dictionary<string, string> prodStates,
+        Dictionary<string, string> stagingStates,
+        Dictionary<string, RegistryEntityInfo> stagingRegistry,
+        string domain)
+    {
+        stagingRegistry.TryGetValue(entityId, out var reg);
+        var (category, reason) = CategorizeParityEntity(domain, reg);
+        prodStates.TryGetValue(entityId, out var prodState);
+        stagingStates.TryGetValue(entityId, out var stagingState);
+        return new EntityParityDetailRow(
+            entityId,
+            category,
+            reason,
+            reg?.Platform,
+            prodState,
+            string.IsNullOrWhiteSpace(stagingState) ? null : stagingState,
+            stagingRegistry.ContainsKey(entityId),
+            reg?.Orphaned == true);
+    }
+
+    static (string Category, string Reason) CategorizeParityEntity(string domain, RegistryEntityInfo? reg)
+    {
+        if (reg?.Orphaned == true)
+        {
+            return ("orphaned",
+                "Integration was removed on staging — registry entry is orphaned (settings/history may break until storage sync restores it)");
+        }
+
+        var platform = reg?.Platform ?? "unknown";
+        if (domain == "sensor" || domain == "binary_sensor")
+        {
+            return platform switch
+            {
+                "mobile_app" => ("mobile_app", "Phone/app sensor — reports to prod only; not mirrored to staging"),
+                "systemmonitor" => ("systemmonitor", "Prod HA Green host metrics — not applicable on staging Docker"),
+                "esphome" => ("esphome", "ESPHome LAN device — integration disabled on staging; entity id kept for automations"),
+                "mqtt" => ("mqtt", "MQTT/Zigbee entity — live state on staging only when kit mirror forwards this topic"),
+                "smartthings" => ("cloud", "SmartThings cloud — needs staging OAuth; no live poll yet"),
+                "tuya" => ("cloud", "Tuya cloud — needs staging OAuth; no live poll yet"),
+                "reolink" => ("lan_camera", "Reolink LAN camera — not run on staging"),
+                "zwave_js" => ("usb", "Z-Wave USB stick on prod — not present on staging"),
+                _ => ("other", "No live state on staging — often expected until Phase 2 state mirror"),
+            };
+        }
+
+        return ("other", "Present on prod live states but not on staging live states");
+    }
+
+    static string ParityCategoryLabel(string category) => category switch
+    {
+        "mobile_app" => "Mobile app (prod only)",
+        "systemmonitor" => "System monitor (prod host)",
+        "esphome" => "ESPHome (LAN disabled)",
+        "mqtt" => "MQTT / Zigbee (mirror)",
+        "cloud" => "Cloud integrations",
+        "lan_camera" => "LAN cameras",
+        "usb" => "USB / hardware on prod",
+        "orphaned" => "Orphaned registry (integration removed)",
+        _ => "Other",
+    };
+
+    sealed record HaAutomationRow(string Id, string EntityId, string Alias);
+
+    sealed record RegistryEntityInfo(string? Platform, bool Orphaned);
 
     async Task<Dictionary<string, string>?> FetchPersonStatesAsync(string url, string token, CancellationToken ct)
     {

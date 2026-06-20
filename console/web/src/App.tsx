@@ -65,8 +65,9 @@ function RequireOnboarding({ children }: { children: ReactNode }) {
     );
   }
 
-  if (complete === null) return <div className="shell"><div className="card">Loading…</div></div>;
-  if (!complete && location.pathname !== "/onboarding") return <Navigate to="/onboarding" replace />;
+  if (complete === false && location.pathname !== "/onboarding") {
+    return <Navigate to="/onboarding" replace />;
+  }
   return <>{children}</>;
 }
 

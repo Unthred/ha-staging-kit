@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using HaStagingConsole.Models;
 
 namespace HaStagingConsole.Services;
 
@@ -103,17 +104,16 @@ public sealed class StagingUiCapture(KitPaths paths, SidecarRunner sidecar)
         LovelaceCaptureFiles.Contains(fname, StringComparer.Ordinal);
 
     /// <summary>
-    /// Only pull Lovelace from staging when staging is at least as new as the repo copy.
-    /// Prevents a stale staging disk from overwriting git-committed dashboard edits on refresh.
+    /// Pull Lovelace from staging when content differs. Mtime is not used — repo files are
+    /// often touched by sync/apply without reflecting staging UI edits (see SquiggleBear title drift).
+    /// Local git edits to the Lovelace bundle are protected by <see cref="LovelaceBundleModifiedInRepoAsync"/>.
     /// </summary>
     static bool ShouldCaptureLovelaceFromStaging(string stagingPath, string repoPath)
     {
         if (!File.Exists(repoPath))
             return true;
 
-        var stagingTime = File.GetLastWriteTimeUtc(stagingPath);
-        var repoTime = File.GetLastWriteTimeUtc(repoPath);
-        return stagingTime >= repoTime;
+        return !FilesEqual(stagingPath, repoPath);
     }
 
     static async Task<bool> LovelaceBundleModifiedInRepoAsync(CancellationToken ct)
@@ -163,5 +163,96 @@ public sealed class StagingUiCapture(KitPaths paths, SidecarRunner sidecar)
         }
 
         return rightStream.Read(rightBuf) == 0;
+    }
+
+    public LovelaceDriftStatus GetLovelaceDriftStatus()
+    {
+        var haConfig = EnvFile.Get(paths.ConfigEnvFile, "HA_CONFIG") ?? "/ha-config";
+        var stagingStorage = Path.Combine(haConfig, ".storage");
+        var repoStorage = Path.Combine("/repo", ".storage");
+        var stagingLovelace = Path.Combine(stagingStorage, "lovelace.lovelace");
+        var repoLovelace = Path.Combine(repoStorage, "lovelace.lovelace");
+
+        if (!File.Exists(stagingLovelace) || !File.Exists(repoLovelace))
+        {
+            return new LovelaceDriftStatus(false, false, false, null, null, null, [], "Lovelace dashboard files not found");
+        }
+
+        var stagingDiffersFromRepo = !FilesEqual(stagingLovelace, repoLovelace);
+        var stagingTitle = TryReadPrimaryLovelaceTitle(stagingLovelace);
+        var repoTitle = TryReadPrimaryLovelaceTitle(repoLovelace);
+        var detail = stagingDiffersFromRepo
+            ? $"Staging HA dashboard ({stagingTitle ?? "unknown title"}) differs from git workbench ({repoTitle ?? "unknown title"})."
+            : "Staging HA dashboard matches git workbench.";
+
+        return new LovelaceDriftStatus(
+            true,
+            stagingDiffersFromRepo,
+            false,
+            stagingTitle,
+            repoTitle,
+            null,
+            stagingDiffersFromRepo ? [".storage/lovelace.lovelace"] : [],
+            detail);
+    }
+
+    public static string? TryReadPrimaryLovelaceTitle(string lovelacePath)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(lovelacePath));
+            if (TryReadTitleFromNode(doc.RootElement, out var title))
+                return title;
+        }
+        catch
+        {
+            /* best effort */
+        }
+
+        return null;
+    }
+
+    public static bool TryReadTitleFromNode(System.Text.Json.JsonElement node, out string? title)
+    {
+        title = null;
+        if (node.ValueKind != System.Text.Json.JsonValueKind.Object)
+            return false;
+
+        if (node.TryGetProperty("data", out var data)
+            && data.TryGetProperty("config", out var config)
+            && config.TryGetProperty("views", out var views)
+            && views.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            foreach (var view in views.EnumerateArray())
+            {
+                if (view.TryGetProperty("title", out var titleProp))
+                {
+                    var value = titleProp.GetString();
+                    if (!string.IsNullOrWhiteSpace(value))
+                    {
+                        title = value.Trim();
+                        return true;
+                    }
+                }
+            }
+        }
+
+        if (node.TryGetProperty("views", out var rootViews) && rootViews.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            foreach (var view in rootViews.EnumerateArray())
+            {
+                if (view.TryGetProperty("title", out var titleProp))
+                {
+                    var value = titleProp.GetString();
+                    if (!string.IsNullOrWhiteSpace(value))
+                    {
+                        title = value.Trim();
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 }

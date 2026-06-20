@@ -97,6 +97,148 @@ public sealed class ProdStorageDeployService(
     public Task<ProdStoragePreflightResult> PreflightZ2mConfigAsync(string gitRef, CancellationToken ct) =>
         BuildZ2mPreflightAsync(gitRef, LovelaceParitySource.GitRef, ct);
 
+    /// <summary>
+    /// Deploy/release gate: block only on entity refs, card resources, or Z2M issues
+    /// newly introduced since <paramref name="baselineSha"/>. Pre-existing git/prod drift
+    /// is advisory — fix in Operations, not a deploy blocker.
+    /// </summary>
+    public async Task<ProdStorageDeployGateResult> PreflightLovelaceBundleDeployAsync(
+        string? baselineSha,
+        string gitRef,
+        bool z2mChangedInDiff,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(baselineSha))
+            return MapFullPreflightToDeployGate(await PreflightLovelaceBundleAsync(gitRef, ct));
+
+        var issues = new List<string>();
+        var baselineRefs = await CollectLovelaceEntityReferencesAsync(baselineSha, LovelaceParitySource.GitRef, ct);
+        var targetRefs = await CollectLovelaceEntityReferencesAsync(gitRef, LovelaceParitySource.GitRef, ct);
+        var baselineIds = baselineRefs.Keys.ToHashSet(StringComparer.Ordinal);
+        var targetIds = targetRefs.Keys.ToHashSet(StringComparer.Ordinal);
+        var deltaIds = targetIds.Except(baselineIds).ToList();
+
+        var (prodUrl, prodToken) = TokenFile.Read(paths.ProdTokenFile);
+        if (string.IsNullOrWhiteSpace(prodUrl) || string.IsNullOrWhiteSpace(prodToken))
+        {
+            return new ProdStorageDeployGateResult(
+                false,
+                0,
+                0,
+                0,
+                0,
+                [],
+                [],
+                [],
+                [],
+                ["Prod HA API token not configured — add prod.token to kit secrets"]);
+        }
+
+        var prodEntities = await FetchEntityIdsAsync(prodUrl, prodToken, ct);
+        if (prodEntities is null)
+        {
+            return new ProdStorageDeployGateResult(
+                false,
+                0,
+                0,
+                0,
+                0,
+                [],
+                [],
+                [],
+                [],
+                ["Could not read entity list from prod HA — check prod URL/token"]);
+        }
+
+        var registry = await prodRegistry.ReadAsync(ct);
+        var (stagingUrl, stagingToken) = TokenFile.Read(paths.StagingTokenFile);
+        var stagingEntities = !string.IsNullOrWhiteSpace(stagingUrl) && !string.IsNullOrWhiteSpace(stagingToken)
+            ? await FetchEntityIdsAsync(stagingUrl, stagingToken, ct)
+            : null;
+
+        var preExistingMissing = targetIds.Where(id => !prodEntities.Contains(id)).Except(deltaIds).ToList();
+        if (preExistingMissing.Count > 0)
+        {
+            issues.Add(
+                $"{preExistingMissing.Count} entity reference(s) in git Lovelace already missing on prod — not introduced by this deploy. Fix in Operations → Entity Janitor when ready.");
+        }
+
+        var deltaReferences = deltaIds.ToDictionary(id => id, id => targetRefs[id], StringComparer.Ordinal);
+        var deltaMissingIds = deltaIds.Where(id => !prodEntities.Contains(id)).ToList();
+        var deltaMissingIssues = LovelaceEntityAnalysis.BuildMissingIssues(
+            deltaMissingIds,
+            deltaReferences,
+            prodEntities,
+            stagingEntities ?? new HashSet<string>(StringComparer.Ordinal),
+            registry);
+        var deltaMissingEntities = deltaMissingIssues.Select(i => i.EntityId).ToList();
+
+        var baselineResources = await ReadResourceUrlsAsync(baselineSha, LovelaceParitySource.GitRef, ct);
+        var targetResources = await ReadResourceUrlsAsync(gitRef, LovelaceParitySource.GitRef, ct);
+        var deltaResources = targetResources.Except(baselineResources).Order(StringComparer.Ordinal).ToList();
+        var missingDeltaResources = new List<string>();
+        var prodResources = await ReadProdResourceUrlsAsync(ct);
+        if (prodResources is null)
+        {
+            issues.Add("Could not read prod lovelace_resources — check prod SSH settings");
+        }
+        else if (deltaResources.Count > 0)
+        {
+            missingDeltaResources = deltaResources
+                .Where(url => !prodResources.Contains(url))
+                .Order(StringComparer.Ordinal)
+                .ToList();
+            if (missingDeltaResources.Count > 0)
+            {
+                issues.Add(
+                    $"{missingDeltaResources.Count} new Lovelace resource URL(s) in this deploy missing on prod — install matching HACS cards first");
+            }
+        }
+
+        IReadOnlyList<Z2mStaleConfigIssue> z2mIssues = [];
+        if (z2mChangedInDiff)
+        {
+            var z2mPreflight = await BuildZ2mPreflightAsync(gitRef, LovelaceParitySource.GitRef, ct);
+            z2mIssues = z2mPreflight.Z2mConfigIssues;
+            issues.AddRange(z2mPreflight.Issues);
+        }
+
+        var deltaBlockers = deltaMissingEntities.Count
+            + missingDeltaResources.Count
+            + z2mIssues.Count(i => i.BlocksDeploy);
+        var ok = deltaBlockers == 0;
+        var removedEntityRefCount = baselineIds.Except(targetIds).Count();
+        if (ok && deltaIds.Count == 0 && missingDeltaResources.Count == 0 && !z2mChangedInDiff)
+        {
+            issues.Insert(0, "Entity Janitor: no new entity references or dashboard resources in this change");
+        }
+
+        return new ProdStorageDeployGateResult(
+            ok,
+            deltaBlockers,
+            preExistingMissing.Count,
+            deltaIds.Count,
+            removedEntityRefCount,
+            deltaMissingEntities,
+            deltaMissingIssues,
+            missingDeltaResources,
+            z2mIssues,
+            issues);
+    }
+
+    static ProdStorageDeployGateResult MapFullPreflightToDeployGate(ProdStoragePreflightResult full) =>
+        new(
+            full.Ok,
+            full.MissingEntityIssues.Count + full.MissingCustomCards.Count + full.Z2mConfigIssues.Count(i => i.BlocksDeploy),
+            0,
+            full.EntityRefCount,
+            0,
+            full.MissingEntities,
+            full.MissingEntityIssues,
+            full.MissingCustomCards,
+            full.Z2mConfigIssues,
+            full.Issues);
+
     public async Task<ProdStoragePreflightResult> PreflightLovelaceBundleForPanelAsync(
         string gitRef,
         CancellationToken ct)

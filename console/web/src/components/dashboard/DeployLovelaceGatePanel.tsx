@@ -7,7 +7,6 @@ import {
   type ProdStoragePreflightResult,
   type Z2mStaleConfigIssue,
 } from "../../api";
-import { ActionButton } from "../ActionButton";
 import { SectionAttentionBadge } from "../PageAttentionPanel";
 import { useToast } from "../Toast";
 import { useNavAttentionContext } from "../../context/NavAttentionContext";
@@ -17,6 +16,7 @@ import { LovelaceIssueDetailBody } from "./LovelaceIssueDetailBody";
 import { ProdNamingIssueDetailBody, prodNamingIssueKey, prodNamingKindLabel } from "./ProdNamingIssueDetailBody";
 import { DeployLovelaceGateScanProgress } from "./DeployLovelaceGateScanProgress";
 import { usePreflightScanProgress } from "../../hooks/usePreflightScanProgress";
+import { useStableMinHeight } from "../../hooks/useStableMinHeight";
 
 /** Minimum ms between focus-triggered entity deploy rescans. */
 const DEPLOY_GATE_FOCUS_RECHECK_MS = 90_000;
@@ -236,7 +236,6 @@ export function DeployLovelaceGatePanel({
   const [selectedNamingKey, setSelectedNamingKey] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedChoiceId, setSelectedChoiceId] = useState<string | null>(null);
-  const [confirmReset, setConfirmReset] = useState(false);
   const [confirmPurgeDeleted, setConfirmPurgeDeleted] = useState(false);
   const preferSelectAfterLoadRef = useRef<string | null | undefined>(undefined);
   const lastScanAtRef = useRef(0);
@@ -250,6 +249,8 @@ export function DeployLovelaceGatePanel({
   const [reviewStacked, setReviewStacked] = useState(false);
   const [listTab, setListTab] = useState<ListTab>("blocking");
   const scanProgress = usePreflightScanProgress(busy || preflightBusy);
+  const panelStable = useStableMinHeight("deploy-gate-inline-panel", layout === "inline");
+  const isScanning = busy || preflightBusy;
 
   useEffect(() => {
     dataRef.current = data;
@@ -764,47 +765,48 @@ export function DeployLovelaceGatePanel({
 
   if (!active) return null;
 
-  if ((busy || preflightBusy) && !data) {
-    return (
-      <div className="deploy-lovelace-gate deploy-lovelace-gate--loading">
-        <p className="deploy-lovelace-gate-title">Entity deploy scan</p>
-        <DeployLovelaceGateScanProgress progress={scanProgress} />
-      </div>
-    );
-  }
+  const scanPassedNoDiff =
+    data &&
+    data.issues.some(
+      (i) =>
+        i.includes("No Lovelace or Zigbee2MQTT bundle changes pending") ||
+        i.includes("full scan below is for cleanup"),
+    ) &&
+    blockingIssues.length === 0 &&
+    deployMissingIssues.length === 0 &&
+    deferredIssues.length === 0 &&
+    z2mIssues.length === 0 &&
+    prodNamingIssues.length === 0 &&
+    data.ok;
 
-  if (error) {
-    return (
-      <div className="deploy-lovelace-gate deploy-lovelace-gate--warn">
-        <GateTitle attentionOrder={attentionOrder}>Could not run entity deploy scan</GateTitle>
-        <p className="muted">{error.message}</p>
-        <button type="button" className="btn secondary btn-compact" onClick={() => void load(undefined, "foreground", true)}>
-          Retry check
-        </button>
-      </div>
-    );
-  }
-
-  if (!data) return null;
-
-  const noScanPending = data.issues.some(
-    (i) =>
-      i.includes("No Lovelace bundle or zigbee2mqtt changes") ||
-      i.includes("No Lovelace bundle changes pending"),
-  );
-  if (noScanPending && z2mIssues.length === 0 && prodNamingIssues.length === 0) return null;
-
-  if (
+  const scanPassedClean =
+    data &&
     data.ok &&
     deferredIssues.length === 0 &&
     !data.pendingCommit &&
     z2mIssues.length === 0 &&
-    prodNamingIssues.length === 0
-  ) {
+    prodNamingIssues.length === 0;
+
+  const workspaceScanPassed = layout === "workspace" && Boolean(scanPassedNoDiff || scanPassedClean);
+  const showNamingTabUi = prodNamingIssues.length > 0 || layout === "workspace";
+
+  if (scanPassedNoDiff && layout !== "workspace") {
+    return (
+      <div className="deploy-lovelace-gate deploy-lovelace-gate--ok">
+        <GateTitle attentionOrder={attentionOrder}>Entity Janitor scan passed</GateTitle>
+        <p className="deploy-lovelace-gate-lead muted">
+          No pending Lovelace/Z2M release diff on GitHub main. Prod has every entity the git dashboard expects (
+          {data.entityRefCount} reference{data.entityRefCount === 1 ? "" : "s"}).
+        </p>
+      </div>
+    );
+  }
+
+  if (scanPassedClean && layout !== "workspace") {
     return (
       <div className="deploy-lovelace-gate deploy-lovelace-gate--ok">
         <GateTitle attentionOrder={attentionOrder}>
-          Entity deploy scan passed — {data.entityRefCount} entity reference
+          Entity Janitor scan passed — {data.entityRefCount} entity reference
           {data.entityRefCount === 1 ? "" : "s"} verified on prod
         </GateTitle>
         <p className="deploy-lovelace-gate-lead muted">
@@ -814,36 +816,47 @@ export function DeployLovelaceGatePanel({
     );
   }
 
-  const resourceCount = data.missingCustomCards.length;
+  const resourceCount = data?.missingCustomCards.length ?? 0;
   const showReview = true;
   const showZ2m = z2mIssues.length > 0;
   const showNamingTab = prodNamingIssues.length > 0;
-  const recheck = data.recheck;
+  const recheck = data?.recheck;
   const showRevertAllFixes =
-    deployMissingIssues.length > 0 || data.fixedLocallyCount > 0 || data.canUndoLovelaceFix;
-  const showUndoMenu = data.canUndoLovelaceFix || showRevertAllFixes;
-  const scanSummary = data.issues.find((issue) => issue.startsWith("Scan summary:"));
-  const statusIssues = data.issues.filter(
-    (issue) =>
-      !issue.startsWith("Scan summary:") &&
-      !issue.includes("prod entity naming issue(s)"),
-  );
+    deployMissingIssues.length > 0 || (data?.fixedLocallyCount ?? 0) > 0 || Boolean(data?.canUndoLovelaceFix);
+  const showUndoMenu = Boolean(data?.canUndoLovelaceFix) || showRevertAllFixes;
+  const scanSummary = data?.issues.find((issue) => issue.startsWith("Scan summary:"));
+  const statusIssues =
+    data?.issues.filter(
+      (issue) =>
+        !issue.startsWith("Scan summary:") &&
+        !issue.includes("prod entity naming issue(s)"),
+    ) ?? [];
   const invalidJsonIssue = statusIssues.find(isJsonParseIssue);
   const publishPending =
-    Boolean(data.pendingCommit && blockingIssues.length === 0 && !backgroundScanning);
-  const gateLead = invalidJsonIssue
-    ? `${invalidJsonIssue} Blocking vs awaiting counts use a text scan until JSON is repaired.`
-    : publishPending
-      ? `${data.fixedLocallyCount} fixed in your local dashboard draft. ${data.deployIssueCount} issue(s) still block deploy on the published bundle until you commit and push in the ship wizard below.`
-      : blockingIssues.length > 0 && deployMissingIssues.length > 0
-        ? `${blockingIssues.length} still need fixes in the draft · ${deployMissingIssues.length} already fixed locally and awaiting publish.`
-        : blockingIssues.length > 0 || blockingZ2mIssues.length > 0
-          ? "Select a blocker — fix steps and kit actions are in the detail panel."
-            : blockingIssues.length === 0 && deferredIssues.length > 0
-            ? "Deferred entities won't block deploy, but cards may error on prod until you fix or restore them."
-            : showNamingTab
-              ? "Blocking tab covers deploy. Naming tab lists prod `_2` / cast suffix cleanups — select one for fix steps."
-              : "Compares the deploy dashboard with live prod. Deploy never renames prod entities automatically.";
+    Boolean(data?.pendingCommit && blockingIssues.length === 0 && !backgroundScanning);
+  const gateLead = error && !data
+    ? `${error.message} — retry the scan when the kit API is ready.`
+    : !data
+      ? busy || preflightBusy
+        ? "Running Entity Janitor scan against prod…"
+        : "Waiting for scan results…"
+      : workspaceScanPassed
+        ? scanPassedNoDiff
+          ? `No pending Lovelace/Z2M release diff on GitHub main. Prod has every entity the git dashboard expects (${data!.entityRefCount} reference${data!.entityRefCount === 1 ? "" : "s"}).`
+          : `Entity Janitor scan passed — ${data!.entityRefCount} entity reference${data!.entityRefCount === 1 ? "" : "s"} verified on prod.`
+        : invalidJsonIssue
+          ? `${invalidJsonIssue} Blocking vs awaiting counts use a text scan until JSON is repaired.`
+          : publishPending
+            ? `${data.fixedLocallyCount} fixed in your local dashboard draft. ${data.deployIssueCount} issue(s) still block deploy on the published bundle until you commit and push in the ship wizard below.`
+            : blockingIssues.length > 0 && deployMissingIssues.length > 0
+              ? `${blockingIssues.length} still need fixes in the draft · ${deployMissingIssues.length} already fixed locally and awaiting publish.`
+              : blockingIssues.length > 0 || blockingZ2mIssues.length > 0
+                ? "Select a blocker — fix steps and kit actions are in the detail panel."
+                : blockingIssues.length === 0 && deferredIssues.length > 0
+                  ? "Deferred entities won't block deploy, but cards may error on prod until you fix or restore them."
+                  : showNamingTab
+                    ? "Blocking tab covers deploy. Naming tab lists prod `_2` / cast suffix cleanups — select one for fix steps."
+                    : "Compares the deploy dashboard with live prod. Deploy never renames prod entities automatically.";
   const showRecheckDelta =
     recheck &&
     (recheck.resolvedEntityIds.length > 0 || recheck.newEntityIds.length > 0) &&
@@ -858,19 +871,27 @@ export function DeployLovelaceGatePanel({
 
   return (
     <div
-      className={`deploy-lovelace-gate ${blockingIssues.length === 0 ? "deploy-lovelace-gate--warn" : "deploy-lovelace-gate--blocked"}${reviewStacked ? " deploy-lovelace-gate--stacked" : ""}${layout === "workspace" ? " deploy-lovelace-gate--workspace-layout" : ""}`}
+      ref={layout === "inline" ? panelStable.ref : undefined}
+      style={layout === "inline" ? panelStable.style : undefined}
+      className={`deploy-lovelace-gate ${
+        workspaceScanPassed || (data?.ok && blockingIssues.length === 0 && blockingZ2mIssues.length === 0)
+          ? "deploy-lovelace-gate--ok"
+          : blockingIssues.length === 0
+            ? "deploy-lovelace-gate--warn"
+            : "deploy-lovelace-gate--blocked"
+      }${reviewStacked ? " deploy-lovelace-gate--stacked" : ""}${layout === "workspace" ? " deploy-lovelace-gate--workspace-layout" : ""}${isScanning ? " deploy-lovelace-gate--scanning" : ""}`}
     >
       <div className="deploy-lovelace-gate-toolbar">
         <div className="deploy-lovelace-gate-toolbar-main">
           <p className="deploy-lovelace-gate-toolbar-title">
-            <span>Entity deploy gate</span>
+            <span>Entity Janitor</span>
             <SectionAttentionBadge order={attentionOrder} />
           </p>
           <div className="deploy-lovelace-gate-toolbar-chips" aria-label="Issue counts">
             <span className="deploy-lovelace-gate-chip">{blockingIssues.length} blocking</span>
             <span className="deploy-lovelace-gate-chip">{deployMissingIssues.length} awaiting</span>
             <span className="deploy-lovelace-gate-chip">{deferredIssues.length} deferred</span>
-            {showNamingTab && (
+            {showNamingTabUi && (
               <span className="deploy-lovelace-gate-chip">{prodNamingIssues.length} naming</span>
             )}
           </div>
@@ -882,37 +903,41 @@ export function DeployLovelaceGatePanel({
             <span className={`deploy-lovelace-gate-scan-dot${backgroundScanning && !busy ? " is-active" : ""}`} />
           </span>
         </div>
-        {showUndoMenu && (
-          <details className="deploy-lovelace-gate-undo-menu">
-            <summary className="btn secondary btn-compact">Undo</summary>
-            <div className="deploy-lovelace-gate-undo-menu-panel">
-              {data.canUndoLovelaceFix && (
-                <button
-                  type="button"
-                  className="deploy-lovelace-gate-undo-menu-item"
-                  disabled={fixBusy}
-                  onClick={() => void undoLastFix()}
-                  title={data.lovelaceUndoDescription ?? undefined}
-                >
-                  Undo last fix
-                  {data.lovelaceUndoDescription ? (
-                    <span className="muted"> ({data.lovelaceUndoDescription})</span>
-                  ) : null}
-                </button>
-              )}
-              {showRevertAllFixes && (
-                <button
-                  type="button"
-                  className="deploy-lovelace-gate-undo-menu-item"
-                  disabled={fixBusy}
-                  onClick={() => void undoAllFixes()}
-                >
-                  Revert all local fixes
-                </button>
-              )}
-            </div>
-          </details>
-        )}
+        <div className="deploy-lovelace-gate-undo-reserve">
+          {showUndoMenu ? (
+            <details className="deploy-lovelace-gate-undo-menu">
+              <summary className="btn secondary btn-compact">Undo</summary>
+              <div className="deploy-lovelace-gate-undo-menu-panel">
+                {data?.canUndoLovelaceFix && (
+                  <button
+                    type="button"
+                    className="deploy-lovelace-gate-undo-menu-item"
+                    disabled={fixBusy}
+                    onClick={() => void undoLastFix()}
+                    title={data.lovelaceUndoDescription ?? undefined}
+                  >
+                    Undo last fix
+                    {data.lovelaceUndoDescription ? (
+                      <span className="muted"> ({data.lovelaceUndoDescription})</span>
+                    ) : null}
+                  </button>
+                )}
+                {showRevertAllFixes && (
+                  <button
+                    type="button"
+                    className="deploy-lovelace-gate-undo-menu-item"
+                    disabled={fixBusy}
+                    onClick={() => void undoAllFixes()}
+                  >
+                    Revert all local fixes
+                  </button>
+                )}
+              </div>
+            </details>
+          ) : layout === "workspace" ? (
+            <span className="deploy-lovelace-gate-undo-placeholder" aria-hidden="true" />
+          ) : null}
+        </div>
       </div>
       <p
         className={`deploy-lovelace-gate-toolbar-lead${invalidJsonIssue ? " deploy-lovelace-gate-toolbar-lead--json-error" : " muted"}`}
@@ -930,15 +955,18 @@ export function DeployLovelaceGatePanel({
       </p>
 
       <div className="deploy-lovelace-gate-workspace">
-        {busy && (
+        {(busy || preflightBusy) && (
           <DeployLovelaceGateScanProgress
             progress={scanProgress}
-            fallbackLabel="Rechecking entity deploy scan…"
+            fallbackLabel={data ? "Rechecking Entity Janitor scan…" : "Running Entity Janitor scan…"}
             overlay
           />
         )}
         {showReview && (
-          <div className="deploy-lovelace-gate-review deploy-lovelace-gate-review--workspace">
+          <div
+            className="deploy-lovelace-gate-review deploy-lovelace-gate-review--workspace"
+            aria-hidden={isScanning ? true : undefined}
+          >
             <div className="deploy-lovelace-gate-lists-column">
               <div className="deploy-lovelace-gate-list-tabs" role="tablist" aria-label="Entity issue lists">
                 <button
@@ -968,7 +996,7 @@ export function DeployLovelaceGatePanel({
                 >
                   Deferred ({deferredIssues.length})
                 </button>
-                {showNamingTab && (
+                {showNamingTabUi && (
                   <button
                     type="button"
                     role="tab"
@@ -1106,7 +1134,7 @@ export function DeployLovelaceGatePanel({
                       isDeferred={selectedIsDeferred}
                       measure={selectedAwaitsPublish}
                       awaitingPublishAction={selected.awaitingPublishAction}
-                      allowProdRegistryPurge={data.allowProdRegistryPurge && prodWritesEnabled}
+                      allowProdRegistryPurge={Boolean(data?.allowProdRegistryPurge && prodWritesEnabled)}
                       allowProdFix={prodWritesEnabled}
                       prodWritesLockMessage={lockMessage}
                       confirmPurgeDeleted={confirmPurgeDeleted}
@@ -1254,7 +1282,7 @@ export function DeployLovelaceGatePanel({
         <div className="deploy-lovelace-gate-section">
           <h4>Lovelace resources missing on prod ({resourceCount})</h4>
           <ul className="deploy-lovelace-gate-entities">
-            {data.missingCustomCards.map((url) => (
+            {(data?.missingCustomCards ?? []).map((url) => (
               <li key={url}>
                 <code>{url}</code>
               </li>
@@ -1263,46 +1291,6 @@ export function DeployLovelaceGatePanel({
         </div>
       )}
 
-      <div className="deploy-lovelace-gate-fix">
-        <div className="deploy-lovelace-gate-reset">
-          <p className="deploy-lovelace-gate-reset-title">Reset workbench</p>
-          <p className="muted deploy-lovelace-gate-reset-lead">
-            Discards unsaved dashboard edits and kit defer/undo state, re-applies the published staging bundle to
-            staging HA, and re-syncs prod registries/helpers to staging. Does not change prod or remove dashboard
-            entity references that still block deploy.
-          </p>
-          {!confirmReset ? (
-            <button type="button" className="btn secondary btn-compact" onClick={() => setConfirmReset(true)}>
-              Reset workbench…
-            </button>
-          ) : (
-            <div className="confirm-box deploy-lovelace-gate-reset-confirm">
-              <p className="msg err">
-                Resets the dashboard draft to the last published staging version (unsaved local edits are lost),
-                clears entity-scan defer/undo, re-applies staging from the repo, and copies prod registries to
-                staging. Prod is not touched.
-              </p>
-              <div className="deploy-lovelace-gate-action-buttons">
-                <ActionButton
-                  label="Yes, reset workbench"
-                  toastPreset="reset-workbench"
-                  variant="danger"
-                  onRun={operationsApi.resetWorkbench}
-                  onDone={() => {
-                    setConfirmReset(false);
-                    onFixed?.();
-                    void load(undefined, "foreground");
-                  }}
-                  onFailure={() => setConfirmReset(false)}
-                />
-                <button type="button" className="btn secondary btn-compact" onClick={() => setConfirmReset(false)}>
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
     </div>
   );
 }

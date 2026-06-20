@@ -112,6 +112,10 @@ deploy_sidecar() {
   require_container
   deploy_phase "QUICK SIDECAR — copy /sidecar/lib + /sidecar/sbin (no image rebuild)"
 
+  while IFS= read -r -d '' f; do
+    sed -i 's/\r$//' "$f"
+  done < <(find "$ROOT/sidecar/sbin" "$ROOT/sidecar/lib" -name '*.sh' -print0 2>/dev/null)
+
   copy_to_container "$ROOT/sidecar/lib" "/sidecar/lib"
   copy_to_container "$ROOT/sidecar/sbin" "/sidecar/sbin"
   docker exec "$KIT_CONTAINER" chmod +x /sidecar/sbin/*.sh 2>/dev/null || true

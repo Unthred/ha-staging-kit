@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { onboardingApi, toApiError, type ApiError, type HealthCheck, type OnboardingStatus } from "../api";
 import { ActionButton } from "../components/ActionButton";
 import { Chip } from "../components/Chip";
+import { HaLogo } from "../components/HaLogo";
 import { LoadErrorPanel } from "../components/LoadErrorPanel";
 import { MqttMirrorInstructions } from "../components/MqttMirrorInstructions";
 import { KIT_FQDN } from "../lib/kitHosts";
@@ -152,11 +153,17 @@ export default function OnboardingPage() {
   }
 
   return (
-    <div className="shell">
-      <header className="header">
-        <div>
-          <p className="eyebrow">ha-staging-kit</p>
-          <h1>Setup wizard</h1>
+    <div className="shell app-shell onboarding-shell">
+      <header className="top-nav">
+        <span className="top-nav-app-name">ha-staging-kit</span>
+      </header>
+      <header className="header onboarding-header">
+        <div className="onboarding-header-brand">
+          <HaLogo size={80} />
+          <div>
+            <p className="dash-kicker">Setup</p>
+            <h2 className="dash-title">Setup wizard</h2>
+          </div>
         </div>
         <div className="progress-wrap">
           <div className="progress-bar">

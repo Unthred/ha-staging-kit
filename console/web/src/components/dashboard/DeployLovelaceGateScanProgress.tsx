@@ -9,7 +9,7 @@ function elapsedSeconds(startedAt: string): number {
 
 export function DeployLovelaceGateScanProgress({
   progress,
-  fallbackLabel = "Running entity deploy scan…",
+  fallbackLabel = "Running Entity Janitor scan…",
   overlay = false,
 }: {
   progress: PreflightScanProgressView | null;

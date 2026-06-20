@@ -5,7 +5,9 @@ import { Chip } from "../Chip";
 export function OpsLastResultPanel({ result }: { result: OperationResult | null }) {
   const [open, setOpen] = useState(Boolean(result?.logTail));
 
-  if (!result) return null;
+  if (!result) {
+    return <div className="ops-last-result ops-last-result--empty" aria-hidden="true" />;
+  }
 
   const tone = result.ok ? "pass" : "fail";
 

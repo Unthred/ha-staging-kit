@@ -12,6 +12,7 @@ import {
 } from "../api";
 import { ActionButton } from "../components/ActionButton";
 import { Chip } from "../components/Chip";
+import { DashboardHeader } from "../components/dashboard/DashboardHeader";
 import { DeployLovelaceGatePanel } from "../components/dashboard/DeployLovelaceGatePanel";
 import { SectionAttentionBadge } from "../components/PageAttentionPanel";
 import { MirrorControlModeToggle } from "../components/MirrorControlModeToggle";
@@ -21,13 +22,14 @@ import { OpsCallout, OpsChecklist, OpsDetailsPanel, OpsNote, OpsTaskPanel } from
 import { useNavAttentionContext } from "../context/NavAttentionContext";
 import { useAttentionNavigation } from "../hooks/useAttentionNavigation";
 import { operationsActionOrders, operationsSectionActionCount, type OpsSection } from "../lib/navAttention";
+import { useHaUrls } from "../hooks/useHaUrls";
 
 const SECTIONS = [
   {
     id: "entity-deploy",
-    title: "Entity deploy gate",
+    title: "Entity Janitor",
     risk: "medium" as const,
-    summary: "Scan prod entities, export migrations, and clear deploy blockers.",
+    summary: "Scan prod entities, export migrations, and clear release blockers.",
   },
   {
     id: "config-sync",
@@ -53,6 +55,12 @@ const SECTIONS = [
     risk: "medium" as const,
     summary: "Restart the staging Home Assistant container.",
   },
+  {
+    id: "baseline",
+    title: "Baseline from prod",
+    risk: "high" as const,
+    summary: "Rare — export live prod into git, force-align GitHub, optionally rebuild staging.",
+  },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
@@ -75,6 +83,7 @@ export default function OperationsPage() {
   const attentionItems = itemsForPath("/operations");
   const sectionActionCount = (id: SectionId) => operationsSectionActionCount(attentionItems, id as OpsSection);
   const actionOrders = operationsActionOrders(attentionItems, sectionId as OpsSection);
+  const haUrls = useHaUrls();
 
   const refreshMirrorStatus = useCallback(() => {
     dashboardApi
@@ -123,29 +132,36 @@ export default function OperationsPage() {
   const mirrorPort = settings?.mirror.stagingMqttPort ?? 1883;
   const showStorageRestart = Boolean(actionOrders["restart-staging"]);
   const isEntityDeploy = current.id === "entity-deploy";
+  const [confirmBaseline, setConfirmBaseline] = useState(false);
+  const [confirmResetWorkbench, setConfirmResetWorkbench] = useState(false);
+  const [baselineRebuildStaging, setBaselineRebuildStaging] = useState(true);
+
+  const openBaselineConfirm = () => {
+    setBaselineRebuildStaging(true);
+    setConfirmBaseline(true);
+  };
 
   return (
-    <div className={`page ops-page${isEntityDeploy ? " ops-page--entity-deploy" : ""}`}>
-      <header className="ops-page-hero">
-        <p className="ops-page-kicker">Operations</p>
-        <div className="ops-page-hero-row">
-          <div>
-            <h2 className="ops-page-title">{current.title}</h2>
-            <p className="ops-page-subtitle">{current.summary}</p>
-          </div>
-          <Chip status={riskStatus} label={riskLabel(current.risk)} />
-        </div>
-      </header>
+    <div className={`dash dash-live-compact ops-page${isEntityDeploy ? " ops-page--entity-deploy" : ""}`}>
+      <DashboardHeader
+        compact
+        kicker="Operations"
+        title={current.title}
+        subtitle={current.summary}
+        stagingUrl={haUrls.stagingUrl}
+        prodUrl={haUrls.prodUrl}
+        headerExtra={<Chip status={riskStatus} label={riskLabel(current.risk)} />}
+      />
 
-      <nav className="ops-section-tabs" aria-label="Operations sections">
+      <nav className="diag-tabs" aria-label="Operations sections">
         {SECTIONS.map((s) => (
           <button
             key={s.id}
             type="button"
-            className={`ops-section-tab${s.id === sectionId ? " active" : ""}`}
+            className={`diag-tab${s.id === sectionId ? " active" : ""}`}
             onClick={() => setSectionId(s.id)}
           >
-            <span className="ops-nav-label">{s.title}</span>
+            <span className="diag-tab-label">{s.title}</span>
             <SectionAttentionBadge count={sectionActionCount(s.id)} />
           </button>
         ))}
@@ -155,9 +171,9 @@ export default function OperationsPage() {
         <div className="ops-entity-deploy-workspace" id="ops-entity-deploy">
           <OpsCallout>
             <p>
-              Compare git dashboard and config references against prod before you ship Lovelace or registry fixes.
-              Use <strong>Export migration</strong> to write <code>migrations/pending/*.yaml</code> and git patches — prod
-              stays read-only until the release agent runs.
+              Compare git dashboard references against prod. <strong>Request release</strong> blocks only on{" "}
+              <strong>new</strong> issues since the last prod deploy. The full scan (all mismatches) lives here for
+              cleanup and migration export — prod stays read-only until the release agent runs.
             </p>
             <p className="muted">
               The <strong>Naming</strong> tab lists advisory prod cleanup (suffix collisions, cast renames) — it does not
@@ -173,18 +189,191 @@ export default function OperationsPage() {
               HA config git repo is not configured or not mounted. Set the repo path in Settings → Paths &amp; git first.
             </OpsCallout>
           )}
-          {gitConfigured && (
-            <DeployLovelaceGatePanel
-              active
-              layout="workspace"
-              refreshKey={0}
-              onFixed={() => void refreshAttention()}
-            />
-          )}
+          <DeployLovelaceGatePanel
+            active
+            layout="workspace"
+            refreshKey={0}
+            onFixed={() => void refreshAttention()}
+          />
         </div>
       ) : (
         <div className="ops-section-stack" id={`ops-${sectionId}`}>
           <OpsLastResultPanel result={lastResult} />
+
+          {current.id === "baseline" && (
+            <>
+              <OpsCallout tone="warn">
+                <strong>Destructive — use rarely.</strong> Exports live prod (YAML + Lovelace/helpers) into git and
+                force-pushes <code>staging</code> and <code>main</code>. Clears release history and deploy-gate WIP.{" "}
+                <strong>Prod is read-only</strong> — not modified.
+                {baselineRebuildStaging ? (
+                  <>
+                    {" "}
+                    With staging rebuild enabled: wipes staging recorder DB and <code>.storage</code> except auth, then
+                    apply-config, storage sync, MQTT mirror, and restart staging HA.
+                  </>
+                ) : (
+                  <> Git and GitHub only — use Config &amp; sync / Storage sync afterward to bring staging up.</>
+                )}
+              </OpsCallout>
+              {!gitConfigured && (
+                <OpsCallout tone="warn">
+                  HA config git repo is not configured. Set the repo path in Settings → Paths &amp; git first.
+                </OpsCallout>
+              )}
+              <OpsTaskPanel
+                title="Baseline from prod"
+                variant="warn"
+                description={
+                  <>
+                    Use this when you want a clean workbench: git, GitHub, and staging all match prod today. Unlike{" "}
+                    <strong>Reset workbench</strong>, this copies prod <em>into</em> git first — so deploy uses the same
+                    dashboard prod actually runs.
+                  </>
+                }
+                actions={
+                  !confirmBaseline ? (
+                    <button
+                      type="button"
+                      className="btn danger btn-compact"
+                      disabled={!gitConfigured}
+                      onClick={openBaselineConfirm}
+                    >
+                      Baseline from prod…
+                    </button>
+                  ) : (
+                    <div className="confirm-box">
+                      <p className="msg err">
+                        Local git WIP and unpushed commits will be replaced. GitHub <code>main</code> and{" "}
+                        <code>staging</code> will be force-pushed to match prod. Release history is cleared.
+                      </p>
+                      <label className="ops-baseline-option">
+                        <input
+                          type="checkbox"
+                          checked={baselineRebuildStaging}
+                          onChange={(e) => setBaselineRebuildStaging(e.target.checked)}
+                        />
+                        <span>
+                          <strong>Rebuild staging afterward</strong> — wipe staging DB and{" "}
+                          <code>.storage</code> (auth kept), apply git config, prod storage sync, deploy MQTT mirror,
+                          and restart staging HA. Uncheck if you only want git/GitHub aligned for now.
+                        </span>
+                      </label>
+                      <div className="deploy-lovelace-gate-action-buttons">
+                        <ActionButton
+                          label={
+                            baselineRebuildStaging
+                              ? "Yes, baseline and rebuild staging"
+                              : "Yes, baseline git only"
+                          }
+                          toastPreset="baseline-from-prod"
+                          variant="danger"
+                          disabled={!gitConfigured}
+                          onRun={() =>
+                            operationsApi.baselineFromProd({
+                              pushToGitHub: true,
+                              freshDatabase: baselineRebuildStaging,
+                              deployMirror: baselineRebuildStaging,
+                              rebuildStaging: baselineRebuildStaging,
+                            })
+                          }
+                          onDone={(r) => {
+                            setConfirmBaseline(false);
+                            afterOp(r);
+                          }}
+                          onFailure={(r) => {
+                            setConfirmBaseline(false);
+                            onOpFailure(r);
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="btn secondary btn-compact"
+                          onClick={() => setConfirmBaseline(false)}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )
+                }
+              >
+                <OpsChecklist
+                  items={[
+                    "Last tab — only when git, GitHub, and staging have drifted badly",
+                    "Requires prod SSH (export + secrets) and staging API token in Settings",
+                    "With staging rebuild: .storage wiped except auth; regenerate staging LLAT if diagnostics show token errors",
+                    "Without staging rebuild: run Apply config → Storage sync → Restart staging HA yourself",
+                    "For a lighter reset (no prod → git export), use Reset workbench below",
+                  ]}
+                />
+              </OpsTaskPanel>
+              <OpsTaskPanel
+                title="Reset workbench"
+                variant="warn"
+                description={
+                  <>
+                    Discards unsaved dashboard edits and Entity Janitor defer/undo state, re-applies git from GitHub{" "}
+                    <strong>staging</strong> (not prod), and re-syncs prod registries/helpers to staging. Lighter than{" "}
+                    <strong>Baseline from prod</strong> — does not export prod into git or force-push GitHub.
+                  </>
+                }
+                actions={
+                  !confirmResetWorkbench ? (
+                    <button
+                      type="button"
+                      className="btn secondary btn-compact"
+                      disabled={!gitConfigured}
+                      onClick={() => setConfirmResetWorkbench(true)}
+                    >
+                      Reset workbench…
+                    </button>
+                  ) : (
+                    <div className="confirm-box">
+                      <p className="msg err">
+                        Resets the dashboard draft to the last published staging version (unsaved local edits are lost),
+                        clears Entity Janitor defer/undo, re-applies staging from the repo, and copies prod registries to
+                        staging. Prod is not touched.
+                      </p>
+                      <div className="deploy-lovelace-gate-action-buttons">
+                        <ActionButton
+                          label="Yes, reset workbench"
+                          toastPreset="reset-workbench"
+                          variant="danger"
+                          disabled={!gitConfigured}
+                          onRun={operationsApi.resetWorkbench}
+                          onDone={(r) => {
+                            setConfirmResetWorkbench(false);
+                            afterOp(r);
+                          }}
+                          onFailure={(r) => {
+                            setConfirmResetWorkbench(false);
+                            onOpFailure(r);
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="btn secondary btn-compact"
+                          onClick={() => setConfirmResetWorkbench(false)}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )
+                }
+              >
+                <OpsChecklist
+                  items={[
+                    "Use when local dashboard draft or Entity Janitor defer/undo is messy — not when git itself is wrong",
+                    "Requires prod SSH for storage sync and staging API token in Settings",
+                    "Does not modify prod — read-only from prod's perspective",
+                    "For git/GitHub aligned with live prod, use Baseline from prod above instead",
+                  ]}
+                />
+              </OpsTaskPanel>
+            </>
+          )}
 
           {current.id === "config-sync" && (
             <>

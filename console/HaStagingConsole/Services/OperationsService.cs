@@ -8,11 +8,13 @@ public sealed class OperationsService(
     KitPaths paths,
     SidecarRunner sidecar,
     DockerRunner docker,
+    StagingQuiesceService stagingQuiesce,
     DashboardBuilder dashboard,
     ProdStorageDeployService storageDeploy,
     LovelaceParityFixService parityFix,
     Zigbee2MqttConfigFixService z2mConfigFix,
     WorkbenchResetService workbenchReset,
+    BaselineFromProdService baselineFromProd,
     ProdDeletedRegistryPurgeService deletedRegistryPurge,
     ProdEntitySuffixFixService entitySuffixFix,
     MigrationExportService migrationExport,
@@ -20,6 +22,9 @@ public sealed class OperationsService(
     GitSshConfigurator gitSsh,
     IHttpClientFactory httpClientFactory)
 {
+    static readonly TimeSpan LongSidecarScriptTimeout = TimeSpan.FromMinutes(12);
+    static readonly TimeSpan ShortSidecarScriptTimeout = TimeSpan.FromSeconds(30);
+
     public Task<OperationResult> ApplyConfigAsync(CancellationToken ct)
     {
         if (!Directory.Exists("/repo/.git"))
@@ -28,7 +33,7 @@ public sealed class OperationsService(
                 "Git repo not configured — set the HA config repo path in Settings and complete the setup wizard paths step",
                 null));
 
-        return RunSidecarScript("/sidecar/sbin/apply-config.sh", "Apply config", ct);
+        return RunSidecarScript("/sidecar/sbin/apply-config.sh", "Apply config", LongSidecarScriptTimeout, ct);
     }
 
     public Task<OperationResult> PushToGitHubAsync(CancellationToken ct)
@@ -38,14 +43,14 @@ public sealed class OperationsService(
     }
 
     public Task<OperationResult> SnapshotFromStagingAsync(CancellationToken ct) =>
-        RunSidecarScript("/sidecar/sbin/snapshot-from-staging.sh", "Snapshot from staging HA", ct);
+        RunSidecarScript("/sidecar/sbin/snapshot-from-staging.sh", "Snapshot from staging HA", LongSidecarScriptTimeout, ct);
 
     public Task<OperationResult> PersonPollAsync(CancellationToken ct) =>
-        RunSidecarScript("/sidecar/sbin/person-poller.sh --once", "Person poll", ct);
+        RunSidecarScript("/sidecar/sbin/person-poller.sh --once", "Person poll", ShortSidecarScriptTimeout, ct);
 
     public async Task<OperationResult> StorageSyncAsync(CancellationToken ct)
     {
-        var result = await RunSidecarScript("/sidecar/sbin/sync-storage.sh", "Storage sync", ct);
+        var result = await RunSidecarScript("/sidecar/sbin/sync-storage.sh", "Storage sync", LongSidecarScriptTimeout, ct);
         if (!result.Ok)
             return result;
 
@@ -65,6 +70,9 @@ public sealed class OperationsService(
 
     public Task<OperationResult> ResetWorkbenchAsync(CancellationToken ct) =>
         workbenchReset.ResetAsync(ct);
+
+    public Task<OperationResult> BaselineFromProdAsync(BaselineFromProdRequest? request, CancellationToken ct) =>
+        baselineFromProd.RunAsync(request ?? new BaselineFromProdRequest(), ct);
 
     public async Task<OperationResult> ShipToStagingAsync(CancellationToken ct)
     {
@@ -92,10 +100,13 @@ public sealed class OperationsService(
         if (!restart.Ok)
             return Fail(logs, restart.LogTail);
 
+        if (!string.IsNullOrWhiteSpace(restart.LogTail))
+            logs.Add(restart.LogTail!);
+
         return new OperationResult(
             true,
             "Shipped to staging — pushed git, applied config, restarted staging HA",
-            JoinLogs(logs, restart.LogTail));
+            JoinLogs(logs, null));
     }
 
     // Files in the config repo that HA actually reads — must match DashboardBuilder.IsHaDeployPath.
@@ -259,6 +270,190 @@ public sealed class OperationsService(
         }
     }
 
+    /// <summary>
+    /// When release targets main, preview staging if HA work is on GitHub staging but not merged yet.
+    /// Matches ApplyAsync merge-staging-then-deploy behaviour.
+    /// </summary>
+    public async Task<string> ResolveReleasePreviewRefAsync(string gitRef, CancellationToken ct)
+    {
+        var normalized = string.IsNullOrWhiteSpace(gitRef) ? "origin/main" : gitRef.Trim();
+        if (normalized is not ("origin/main" or "main"))
+            return normalized;
+
+        if (!Directory.Exists("/repo/.git"))
+            return normalized;
+
+        var stagingBranch = EnvFile.Get(paths.EnvFile, "HA_BRANCH") ?? "staging";
+        var stagingRef = $"origin/{stagingBranch}";
+        var stagingAhead = await GitRevCountAsync($"origin/main..{stagingRef}", ct);
+        if (stagingAhead <= 0)
+            return normalized;
+
+        var pathArgs = string.Join(" ", HaConfigPaths.Select(ShQ));
+        var (ok, stdout, _) = await RunGitBashAsync(
+            $"git -C /repo diff --name-only origin/main {stagingRef} -- {pathArgs}", ct);
+        return ok && !string.IsNullOrWhiteSpace(stdout) ? stagingRef : normalized;
+    }
+
+    /// <summary>Diff-scoped gate for Request release / deploy — blocks only on new issues since last prod deploy.</summary>
+    public async Task<ProdStorageDeployGateResult> PreflightProdStorageDeployGateAsync(CancellationToken ct)
+    {
+        var deployRef = await ResolveReleasePreviewRefAsync("origin/main", ct);
+        var baseline = ReadLastDeployedSha();
+        var changedStoragePaths = await storageDeploy.GetChangedStoragePathsAsync(
+            string.IsNullOrWhiteSpace(baseline) ? null : baseline,
+            deployRef,
+            ct);
+        var lovelaceChanged = changedStoragePaths.Any(ProdStorageDeployService.IsLovelacePath);
+        var z2mChanged = await Zigbee2MqttChangedSinceAsync(baseline, deployRef, ct);
+
+        if (!lovelaceChanged && !z2mChanged)
+        {
+            return new ProdStorageDeployGateResult(
+                true,
+                0,
+                0,
+                0,
+                0,
+                [],
+                [],
+                [],
+                [],
+                ["No Lovelace or Zigbee2MQTT bundle changes pending for prod"]);
+        }
+
+        var (_, gate, _) = await EvaluateDeployStorageGateAsync(
+            baseline,
+            deployRef,
+            lovelaceChanged,
+            z2mChanged,
+            ct);
+        return gate;
+    }
+
+    /// <summary>Release impact preview inputs — diff scope plus diff-scoped deploy gate.</summary>
+    public async Task<ReleaseDeployContext> GetReleaseDeployContextAsync(string gitRef, CancellationToken ct)
+    {
+        var previewRef = await ResolveReleasePreviewRefAsync(gitRef, ct);
+        var baseline = ReadLastDeployedSha();
+        var haChanged = await HaConfigChangedSinceAsync(baseline, previewRef, ct);
+        var changedStoragePaths = await storageDeploy.GetChangedStoragePathsAsync(
+            string.IsNullOrWhiteSpace(baseline) ? null : baseline,
+            previewRef,
+            ct);
+        var lovelaceChanged = changedStoragePaths.Any(ProdStorageDeployService.IsLovelacePath);
+        var helpersChanged = changedStoragePaths.Any(ProdStorageDeployService.IsHelperPath);
+        var z2mChanged = await Zigbee2MqttChangedSinceAsync(baseline, previewRef, ct);
+        var storageDeployPaths = storageDeploy.ResolveDeployPaths(changedStoragePaths);
+        var requiresProdRestart = storageDeployPaths.Count > 0;
+
+        ProdStorageDeployGateResult deployGate;
+        if (lovelaceChanged || z2mChanged)
+        {
+            var (_, gate, _) = await EvaluateDeployStorageGateAsync(
+                baseline,
+                previewRef,
+                lovelaceChanged,
+                z2mChanged,
+                ct);
+            deployGate = gate;
+        }
+        else
+        {
+            deployGate = new ProdStorageDeployGateResult(
+                true,
+                0,
+                0,
+                0,
+                0,
+                [],
+                [],
+                [],
+                [],
+                ["No Lovelace or Zigbee2MQTT bundle changes pending for prod"]);
+        }
+
+        return new ReleaseDeployContext(
+            string.IsNullOrWhiteSpace(baseline) ? null : baseline,
+            haChanged,
+            lovelaceChanged,
+            helpersChanged,
+            z2mChanged,
+            requiresProdRestart,
+            deployGate);
+    }
+
+    async Task<(bool Ok, ProdStorageDeployGateResult Gate, string Detail)> EvaluateDeployStorageGateAsync(
+        string? baselineSha,
+        string gitRef,
+        bool lovelaceChanged,
+        bool z2mChanged,
+        CancellationToken ct)
+    {
+        ProdStorageDeployGateResult gate;
+        if (lovelaceChanged)
+        {
+            gate = await storageDeploy.PreflightLovelaceBundleDeployAsync(
+                baselineSha,
+                gitRef,
+                z2mChanged,
+                ct);
+        }
+        else
+        {
+            gate = MapZ2mOnlyDeployGate(await storageDeploy.PreflightZ2mConfigAsync(gitRef, ct));
+        }
+
+        if (gate.Ok)
+            return (true, gate, "");
+
+        return (false, gate, BuildDeployGateFailure(gate));
+    }
+
+    static ProdStorageDeployGateResult MapZ2mOnlyDeployGate(ProdStoragePreflightResult z2m)
+    {
+        var blocking = z2m.Z2mConfigIssues.Count(i => i.BlocksDeploy);
+        return new ProdStorageDeployGateResult(
+            z2m.Ok,
+            blocking,
+            0,
+            0,
+            0,
+            [],
+            [],
+            [],
+            z2m.Z2mConfigIssues,
+            z2m.Issues);
+    }
+
+    static string BuildDeployGateFailure(ProdStorageDeployGateResult gate)
+    {
+        var parts = new List<string>();
+        if (gate.MissingEntityIssues.Count > 0)
+        {
+            parts.Add(
+                $"{gate.MissingEntityIssues.Count} new Lovelace entity reference(s) in this deploy missing on prod");
+        }
+
+        if (gate.MissingCustomCards.Count > 0)
+        {
+            parts.Add(
+                $"{gate.MissingCustomCards.Count} new Lovelace resource URL(s) in this deploy missing on prod");
+        }
+
+        if (gate.Z2mConfigIssues.Count(i => i.BlocksDeploy) > 0)
+        {
+            parts.Add(
+                $"{gate.Z2mConfigIssues.Count(i => i.BlocksDeploy)} new Zigbee2MQTT config issue(s) in this deploy");
+        }
+
+        parts.AddRange(gate.Issues.Where(i =>
+            !i.Contains("pre-existing", StringComparison.OrdinalIgnoreCase) &&
+            !i.Contains("Entity Janitor:", StringComparison.OrdinalIgnoreCase)
+            && !i.Contains("Deploy gate:", StringComparison.OrdinalIgnoreCase)));
+        return string.Join("\n", parts);
+    }
+
     async Task<ProdStoragePreflightResult> RunPreflightProdStorageDeployCoreAsync(CancellationToken ct)
     {
         using var scan = PreflightProgressStore.BeginScan(3);
@@ -286,28 +481,17 @@ public sealed class OperationsService(
             ct);
 
         ProdStoragePreflightResult result;
+        // Operations workspace always runs the full git-vs-prod entity scan — not only when a release diff exists.
+        PreflightProgressStore.SetTotalSteps(19);
+        result = WithUndoStatus(await storageDeploy.PreflightLovelaceBundleForPanelAsync(deployRef, ct));
         if (!lovelacePending && !z2mPending)
         {
-            PreflightProgressStore.SetTotalSteps(4);
-            var z2mOnly = await storageDeploy.PreflightZ2mConfigAsync(deployRef, ct);
-            result = z2mOnly.Z2mConfigIssues.Any(i => i.BlocksDeploy)
-                ? WithUndoStatus(z2mOnly)
-                : WithUndoStatus(ProdStorageDeployService.EmptyPreflight(
-                    0,
-                    ["No Lovelace bundle or zigbee2mqtt changes pending on GitHub main"]));
-            PreflightProgressStore.Complete();
-            return result;
-        }
-
-        if (lovelacePending)
-        {
-            PreflightProgressStore.SetTotalSteps(19);
-            result = WithUndoStatus(await storageDeploy.PreflightLovelaceBundleForPanelAsync(deployRef, ct));
-        }
-        else
-        {
-            PreflightProgressStore.SetTotalSteps(5);
-            result = WithUndoStatus(await storageDeploy.PreflightZ2mConfigAsync(deployRef, ct));
+            result = result with
+            {
+                Issues = result.Issues
+                    .Concat(["No Lovelace or Zigbee2MQTT bundle changes pending on GitHub main — full scan below is for cleanup, not release blocking."])
+                    .ToList(),
+            };
         }
 
         PreflightProgressStore.Advance("Checking prod entity naming");
@@ -417,34 +601,34 @@ public sealed class OperationsService(
         var z2mChanged = await Zigbee2MqttChangedSinceAsync(haBaseline, deployRef, ct);
         if (lovelaceChanged || z2mChanged)
         {
-            var gate = lovelaceChanged
-                ? await storageDeploy.PreflightLovelaceBundleAsync(deployRef, ct)
-                : await storageDeploy.PreflightZ2mConfigAsync(deployRef, ct);
-            if (!gate.Ok)
+            var (gateOk, gate, detail) = await EvaluateDeployStorageGateAsync(
+                haBaseline,
+                deployRef,
+                lovelaceChanged,
+                z2mChanged,
+                ct);
+            if (!gateOk)
             {
-                var detail = BuildLovelaceGateFailure(gate);
                 logs.Add(detail);
                 return new OperationResult(
                     false,
                     lovelaceChanged
-                        ? "Deploy blocked — entity deploy scan failed"
-                        : "Deploy blocked — Zigbee2MQTT config issues on prod",
+                        ? "Deploy blocked — new entity or dashboard issues in this release"
+                        : "Deploy blocked — Zigbee2MQTT config issues in this release",
                     JoinLogs(logs, detail));
             }
 
             if (lovelaceChanged)
             {
-                logs.Add($"Entity deploy scan passed ({gate.EntityRefCount} entity reference(s) verified on prod)");
-                if (gate.DeferredEntityIssues.Count > 0)
-                {
-                    logs.Add(
-                        $"Deploying with {gate.DeferredEntityIssues.Count} deferred entity reference(s) — those cards may error on prod until fixed manually");
-                }
+                logs.Add(
+                    gate.PreExistingMissingCount > 0
+                        ? $"Entity Janitor passed — no new blockers ({gate.PreExistingMissingCount} pre-existing mismatch(es) in git, not blocking)"
+                        : "Entity Janitor passed — no new entity or dashboard blockers in this change");
             }
 
             if (z2mChanged)
             {
-                logs.Add("Zigbee2MQTT config preflight passed — restart Zigbee2MQTT on prod after deploy");
+                logs.Add("Zigbee2MQTT config preflight passed for this release — restart Zigbee2MQTT on prod after deploy");
             }
         }
 
@@ -812,20 +996,39 @@ public sealed class OperationsService(
             return new OperationResult(false, "STAGING_HA_CONTAINER not set in .env", null);
 
         var (ok, msg) = await docker.RestartContainerAsync(container, ct);
+        if (!ok)
+        {
+            if (!string.IsNullOrWhiteSpace(msg))
+                await sidecar.AppendSyncLogAsync($"Restart staging HA failed ({container}): {msg}", ct);
+            return new OperationResult(false, "Restart failed", msg);
+        }
+
         if (!string.IsNullOrWhiteSpace(msg))
-            await sidecar.AppendSyncLogAsync(ok ? $"Restarted staging HA ({container})" : $"Restart staging HA failed ({container}): {msg}", ct);
-        else if (ok)
             await sidecar.AppendSyncLogAsync($"Restarted staging HA ({container})", ct);
 
-        return new OperationResult(ok, ok ? $"Restarted {container}" : "Restart failed", msg);
+        var (quiesceOk, quiesceMsg) = await stagingQuiesce.QuiesceAsync(ct);
+        var logTail = string.IsNullOrWhiteSpace(quiesceMsg) ? msg : $"{msg}\n{quiesceMsg}";
+        if (!quiesceOk)
+            logTail = string.IsNullOrWhiteSpace(logTail)
+                ? "WARN: post-restart quiesce had warnings"
+                : $"{logTail}\nWARN: post-restart quiesce had warnings";
+
+        return new OperationResult(
+            true,
+            quiesceOk ? $"Restarted {container}" : $"Restarted {container} — quiesce had warnings",
+            logTail);
     }
 
-    async Task<OperationResult> RunSidecarScript(string script, string label, CancellationToken ct)
+    async Task<OperationResult> RunSidecarScript(
+        string script,
+        string label,
+        TimeSpan timeout,
+        CancellationToken ct)
     {
         if (!await sidecar.IsSyncLoopRunningAsync(ct))
             return new OperationResult(false, $"Config sync loop is not running — check {paths.SyncLogLocation}", null);
 
-        var (ok, msg) = await sidecar.RunScriptAsync(script, ct);
+        var (ok, msg) = await sidecar.RunScriptAsync(script, timeout, ct);
         if (!string.IsNullOrWhiteSpace(msg))
             await sidecar.AppendSyncLogAsync(msg, ct);
 
@@ -922,8 +1125,9 @@ public sealed class OperationsService(
         CancellationToken ct)
     {
         var logs = new List<string>();
-        var haChanged = await HaConfigChangedSinceAsync(baselineSha, gitRef, ct);
-        var changedStoragePaths = await storageDeploy.GetChangedStoragePathsAsync(baselineSha, gitRef, ct);
+        var effectiveBaseline = string.IsNullOrWhiteSpace(baselineSha) ? ReadLastDeployedSha() : baselineSha;
+        var haChanged = await HaConfigChangedSinceAsync(effectiveBaseline, gitRef, ct);
+        var changedStoragePaths = await storageDeploy.GetChangedStoragePathsAsync(effectiveBaseline, gitRef, ct);
         var storageDeployPaths = storageDeploy.ResolveDeployPaths(changedStoragePaths);
         var lovelaceChanged = changedStoragePaths.Any(ProdStorageDeployService.IsLovelacePath);
 
@@ -935,16 +1139,25 @@ public sealed class OperationsService(
                 null), false, []);
         }
 
-        if (lovelaceChanged || await Zigbee2MqttChangedSinceAsync(baselineSha, gitRef, ct))
+        var z2mChanged = await Zigbee2MqttChangedSinceAsync(effectiveBaseline, gitRef, ct);
+        if (lovelaceChanged || z2mChanged)
         {
-            var gate = lovelaceChanged
-                ? await storageDeploy.PreflightLovelaceBundleAsync(gitRef, ct)
-                : await storageDeploy.PreflightZ2mConfigAsync(gitRef, ct);
-            if (!gate.Ok)
+            var (gateOk, gate, detail) = await EvaluateDeployStorageGateAsync(
+                effectiveBaseline,
+                gitRef,
+                lovelaceChanged,
+                z2mChanged,
+                ct);
+            if (!gateOk)
             {
-                var detail = BuildLovelaceGateFailure(gate);
                 logs.Add(detail);
-                return (new OperationResult(false, "Release blocked — entity deploy scan failed", JoinLogs(logs, detail)), false, []);
+                return (new OperationResult(false, "Release blocked — new issues in this release", JoinLogs(logs, detail)), false, []);
+            }
+
+            if (gate.PreExistingMissingCount > 0)
+            {
+                logs.Add(
+                    $"{gate.PreExistingMissingCount} pre-existing entity mismatch(es) in git Lovelace — not blocking this release");
             }
         }
 

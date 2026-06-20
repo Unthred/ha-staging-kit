@@ -11,6 +11,16 @@ The sidecar **person poller** copies prod `person.*` and linked `device_tracker.
 | `person.*` | `person.squiggley` | Prod REST `GET /api/states` |
 | Linked trackers | `device_tracker.pixel_8` | Same poll — entities tied to persons in the entity registry |
 
+Each poll copies prod **`state`**, location **attributes**, and prod timing into staging attributes:
+
+| Staging attribute | Meaning |
+|-------------------|---------|
+| `source_last_changed` | Prod `last_changed` (when the state last changed — e.g. when you arrived home) |
+| `source_last_updated` | Prod `last_updated` |
+| `source_mirrored_at` | When this poll wrote staging (debug) |
+
+Home Assistant does not allow REST callers to set an entity’s own `last_changed`, so cards that use `secondary_info: last-changed` would show “since last poll” on staging. Person cards in git use a template `secondary` line that prefers `source_last_changed` when present (staging) and falls back to `last_changed` on prod.
+
 **Not synced via the poller:**
 
 - Raw GPS streams or Companion app sessions on staging

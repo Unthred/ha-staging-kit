@@ -69,6 +69,15 @@ function StagingChip({ staging }: { staging: NonNullable<LiveMetricsSnapshot["st
   );
 }
 
+function ChartLegend() {
+  return (
+    <span className="muted dash-live-chart-legend">
+      <span className="dash-legend-prod">Prod</span>
+      <span className="dash-legend-staging">Staging</span>
+    </span>
+  );
+}
+
 function DualSparkline({
   history,
   prodKey,
@@ -203,34 +212,92 @@ export function DashboardLiveMetrics({
   haAttentionCount?: number;
   haAttentionOrder?: number;
 }) {
-  if (!metrics) return null;
+  if (!metrics) {
+    return (
+      <div className="dash-live-metrics">
+        <section className="dash-live-status-strip" aria-label="Live environment status">
+          {(["Git", "MQTT mirror", "Staging HA"] as const).map((label) => (
+            <div key={label} className="dash-live-chip dash-live-chip-info">
+              <span className="dash-live-chip-label">{label}</span>
+              <span className="dash-live-chip-value">—</span>
+              <span className="dash-live-chip-meta muted">Loading…</span>
+            </div>
+          ))}
+        </section>
+        <section className="dash-live-charts" aria-label="Live activity charts">
+          <article className="dash-panel dash-live-chart-panel">
+            <header className="dash-panel-head dash-panel-head-tight">
+              <h3>HA API latency</h3>
+              <ChartLegend />
+            </header>
+            <div className="dash-live-chart-plot">
+              <p className="muted dash-live-chart-empty">Loading reachability history…</p>
+            </div>
+            <p className="muted dash-live-chart-meta">—</p>
+          </article>
+          <DashboardHaHealthSummary
+            issues={haIssues}
+            attentionCount={haAttentionCount}
+            attentionOrder={haAttentionOrder}
+            variant="chart"
+          />
+          <article className="dash-panel dash-live-chart-panel">
+            <header className="dash-panel-head dash-panel-head-tight">
+              <h3>Automation runs</h3>
+              <ChartLegend />
+            </header>
+            <div className="dash-live-chart-plot">
+              <p className="muted dash-live-chart-empty">Loading automation activity…</p>
+            </div>
+            <p className="muted dash-live-chart-meta">—</p>
+          </article>
+        </section>
+      </div>
+    );
+  }
 
   const { status, reachability, automation } = metrics;
-  const hasChips = status.git || status.mirror || status.staging;
-  const hasCharts = reachability.available || automation?.available || haIssues.length >= 0;
-  if (!hasChips && !hasCharts) return null;
 
   return (
     <div className="dash-live-metrics">
-      {hasChips && (
-        <section className="dash-live-status-strip" aria-label="Live environment status">
-          {status.git && <GitChip git={status.git} />}
-          {status.mirror && <MirrorChip mirror={status.mirror} />}
-          {status.staging && <StagingChip staging={status.staging} />}
-        </section>
-      )}
+      <section className="dash-live-status-strip" aria-label="Live environment status">
+        {status.git ? (
+          <GitChip git={status.git} />
+        ) : (
+          <div className="dash-live-chip dash-live-chip-info">
+            <span className="dash-live-chip-label">Git</span>
+            <span className="dash-live-chip-value">—</span>
+            <span className="dash-live-chip-meta muted">Not available</span>
+          </div>
+        )}
+        {status.mirror ? (
+          <MirrorChip mirror={status.mirror} />
+        ) : (
+          <div className="dash-live-chip dash-live-chip-info">
+            <span className="dash-live-chip-label">MQTT mirror</span>
+            <span className="dash-live-chip-value">Off</span>
+            <span className="dash-live-chip-meta muted">Not configured</span>
+          </div>
+        )}
+        {status.staging ? (
+          <StagingChip staging={status.staging} />
+        ) : (
+          <div className="dash-live-chip dash-live-chip-warn">
+            <span className="dash-live-chip-label">Staging HA</span>
+            <span className="dash-live-chip-value">—</span>
+            <span className="dash-live-chip-meta muted">Unreachable</span>
+          </div>
+        )}
+      </section>
 
-      {hasCharts && (
-        <section className="dash-live-charts" aria-label="Live activity charts">
-          {reachability.available && (
-            <article className="dash-panel dash-live-chart-panel">
-              <header className="dash-panel-head dash-panel-head-tight">
-                <h3>HA API latency</h3>
-                <span className="muted dash-live-chart-legend">
-                  <span className="dash-legend-prod">Prod</span>
-                  <span className="dash-legend-staging">Staging</span>
-                </span>
-              </header>
+      <section className="dash-live-charts" aria-label="Live activity charts">
+        <article className="dash-panel dash-live-chart-panel">
+          <header className="dash-panel-head dash-panel-head-tight">
+            <h3>HA API latency</h3>
+            <ChartLegend />
+          </header>
+          <div className="dash-live-chart-plot">
+            {reachability.available ? (
               <DualSparkline
                 history={reachability.history}
                 prodKey="prodLatencyMs"
@@ -238,37 +305,43 @@ export function DashboardLiveMetrics({
                 stagingClass="dash-spark-bar-staging"
                 ariaLabel="HA API latency trend"
               />
-              <p className="muted dash-live-chart-meta">
-                Now: prod {reachability.prodReachable ? `${reachability.prodLatencyMs ?? "—"}ms` : "down"} · staging{" "}
-                {reachability.stagingReachable ? `${reachability.stagingLatencyMs ?? "—"}ms` : "down"}
-              </p>
-            </article>
-          )}
+            ) : (
+              <p className="muted dash-live-chart-empty">Reachability history unavailable.</p>
+            )}
+          </div>
+          <p className="muted dash-live-chart-meta">
+            {reachability.available
+              ? `Now: prod ${reachability.prodReachable ? `${reachability.prodLatencyMs ?? "—"}ms` : "down"} · staging ${reachability.stagingReachable ? `${reachability.stagingLatencyMs ?? "—"}ms` : "down"}`
+              : "—"}
+          </p>
+        </article>
 
-          <DashboardHaHealthSummary
-            issues={haIssues}
-            attentionCount={haAttentionCount}
-            attentionOrder={haAttentionOrder}
-            variant="chart"
-          />
+        <DashboardHaHealthSummary
+          issues={haIssues}
+          attentionCount={haAttentionCount}
+          attentionOrder={haAttentionOrder}
+          variant="chart"
+        />
 
-          {automation?.available && (
-            <article className="dash-panel dash-live-chart-panel">
-              <header className="dash-panel-head dash-panel-head-tight">
-                <h3>Automation runs</h3>
-                <span className="muted dash-live-chart-legend">
-                  <span className="dash-legend-prod">Prod</span>
-                  <span className="dash-legend-staging">Staging</span>
-                </span>
-              </header>
+        <article className="dash-panel dash-live-chart-panel">
+          <header className="dash-panel-head dash-panel-head-tight">
+            <h3>Automation runs</h3>
+            <ChartLegend />
+          </header>
+          <div className="dash-live-chart-plot">
+            {automation?.available ? (
               <AutomationChart automation={automation} />
-              <p className="muted dash-live-chart-meta">
-                Last hour: prod {automation.prodRunsLastHour} · staging {automation.stagingRunsLastHour}
-              </p>
-            </article>
-          )}
-        </section>
-      )}
+            ) : (
+              <p className="muted dash-live-chart-empty">Automation activity unavailable.</p>
+            )}
+          </div>
+          <p className="muted dash-live-chart-meta">
+            {automation?.available
+              ? `Last hour: prod ${automation.prodRunsLastHour} · staging ${automation.stagingRunsLastHour}`
+              : "—"}
+          </p>
+        </article>
+      </section>
     </div>
   );
 }

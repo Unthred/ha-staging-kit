@@ -80,3 +80,7 @@ fi
 if ! "$SCRIPT_DIR/preserve-staging-oauth-entries.sh" restore; then
   log "WARN: staging OAuth preserve restore failed — cloud integrations may need re-auth"
 fi
+
+if ! "$SCRIPT_DIR/prune-staging-config-entries.sh"; then
+  log "WARN: staging config entry prune failed — LAN/voice integrations may load on restart"
+fi

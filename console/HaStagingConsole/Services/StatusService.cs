@@ -32,6 +32,7 @@ public sealed partial class StatusService(
         var stagingTargetTask    = stagingTarget.BuildAsync(state, env, ct);
         var syncRunningTask      = sidecar.IsSyncLoopRunningAsync(ct);
         var syncLogsTask         = sidecar.SyncLogTailAsync(8000, ct);
+        var personPollLogsTask   = sidecar.PersonPollLogTailAsync(8000, ct);
         var checkProdHaTask      = dashboard.CheckHaAsync("Production HA", prodUrl, ct);
         var mirrorRunningTask    = sidecar.IsMirrorRunningAsync(ct);
         var gitTask              = dashboard.GetGitSnapshotAsync(env, ct);
@@ -46,7 +47,7 @@ public sealed partial class StatusService(
         var stagingHaIssuesTask = haDiagnostics.CollectIssuesAsync("Staging HA", stagingUrl, paths.StagingTokenFile, ct);
 
         await Task.WhenAll(
-            stagingTargetTask, syncRunningTask, syncLogsTask, checkProdHaTask,
+            stagingTargetTask, syncRunningTask, syncLogsTask, personPollLogsTask, checkProdHaTask,
             mirrorRunningTask, gitTask, presenceTask, prodMonitoringTask,
             stagingMonitoringTask, entityParityTask, prodProbeTask, stagingProbeTask,
             automationActivityTask, prodHaIssuesTask, stagingHaIssuesTask);
@@ -54,6 +55,7 @@ public sealed partial class StatusService(
         var stagingTargetInfo  = stagingTargetTask.Result;
         var syncRunning        = syncRunningTask.Result;
         var syncLogs           = syncLogsTask.Result;
+        var personPollLogs     = personPollLogsTask.Result;
         var mirrorRunning      = mirrorRunningTask.Result;
         var git                = gitTask.Result;
         var presence           = presenceTask.Result;
@@ -96,23 +98,27 @@ public sealed partial class StatusService(
         {
             sidecarRuntime = new SidecarRuntimeStatus(
                 true,
-                FormatPersonSyncLine(FindLastLine(syncLogs, PersonSyncPattern())),
+                FormatPersonSyncLine(FindLastLine(personPollLogs, PersonSyncPattern())),
                 FormatPersonSyncLine(FindLastLine(syncLogs, ApplyPattern()), raw: true),
                 FormatPersonSyncLine(FindLastLine(syncLogs, StoragePattern()), raw: true),
                 EnvFile.GetInt(paths.ConfigEnvFile, "PERSON_POLL_INTERVAL", 60),
                 EnvFile.GetInt(paths.ConfigEnvFile, "STORAGE_SYNC_INTERVAL", 86400));
         }
 
-        var personSync = dashboard.ParsePersonSync(syncLogs);
+        var personSync = dashboard.ParsePersonSync(personPollLogs);
         var syncActivity = dashboard.ParseSyncActivity(syncLogs, personSync);
-        var pollHistory = dashboard.ParsePollHistory(syncLogs);
+        var pollHistory = dashboard.ParsePollHistory(personPollLogs);
         var syncLogTail = dashboard.TailSyncLog(syncLogs);
         var configInventory = dashboard.GetConfigInventory();
-        var stagingRepresentation = dashboard.BuildStagingRepresentation(git, drift, entityParity, presence);
+        var automationGitGap = await dashboard.GetAutomationGitGapAsync(ct);
+        if (configInventory.Available && automationGitGap is not null)
+            configInventory = configInventory with { AutomationGitGap = automationGitGap };
+        var lovelaceDrift = await dashboard.GetLovelaceDriftStatusAsync(ct);
+        var stagingRepresentation = dashboard.BuildStagingRepresentation(git, drift, entityParity, presence, lovelaceDrift);
         var mirrorData = env.GetValueOrDefault("MIRROR_DATA", "");
         var mqttBridge = dashboard.GetMqttBridgeStats(mirrorData, mirrorRunning);
         var readiness = dashboard.BuildReadiness(onboarding, syncRunning, git);
-        var issues = CollectIssues(subsystems, syncLogs, env, personSync);
+        var issues = CollectIssues(subsystems, syncLogs, personPollLogs, env, personSync);
         var suggested = dashboard.BuildSuggestedAction(
             MergeIssues(issues, haIssues), subsystems, drift, mirrorStatus.Configured ? mirrorStatus : null, readiness, syncActivity);
 
@@ -170,6 +176,7 @@ public sealed partial class StatusService(
             stagingMonitoring,
             entityParity,
             stagingRepresentation,
+            lovelaceDrift,
             mqttBridge,
             syncLogTail,
             pollHistory,
@@ -235,6 +242,7 @@ public sealed partial class StatusService(
 
         var syncRunning = await sidecar.IsSyncLoopRunningAsync(ct);
         var syncLogs = await sidecar.SyncLogTailAsync(8000, ct);
+        var personPollLogs = await sidecar.PersonPollLogTailAsync(8000, ct);
         var prodHaIssuesTask = haDiagnostics.CollectIssuesAsync("Production HA", prodUrl, paths.ProdTokenFile, ct);
         var stagingHaIssuesTask = haDiagnostics.CollectIssuesAsync("Staging HA", stagingUrl, paths.StagingTokenFile, ct);
 
@@ -307,12 +315,17 @@ public sealed partial class StatusService(
             subsystems.Add(new SubsystemStatus("MQTT mirror", "skip", "Not configured"));
         }
 
-        var personSync = dashboard.ParsePersonSync(syncLogs);
+        var personSync = dashboard.ParsePersonSync(personPollLogs);
         var syncActivity = dashboard.ParseSyncActivity(syncLogs, personSync);
-        var pollHistory = dashboard.ParsePollHistory(syncLogs);
-        var issues = CollectIssues(subsystems, syncLogs, env, personSync);
+        var pollHistory = dashboard.ParsePollHistory(personPollLogs);
+        var issues = CollectIssues(subsystems, syncLogs, personPollLogs, env, personSync);
 
         var syncLogLines = syncLogs
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .TakeLast(300)
+            .ToList();
+
+        var personPollLogLines = personPollLogs
             .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .TakeLast(300)
             .ToList();
@@ -341,11 +354,13 @@ public sealed partial class StatusService(
             pollHistory,
             syncActivity,
             syncLogLines,
+            personPollLogLines,
             mqttLogLines,
             prodHaLogTask.Result,
             stagingHaLogTask.Result,
             mirrorStatus.Configured,
             paths.SyncLogLocation,
+            paths.PersonPollLogLocation,
             mqttLogPath,
             DateTimeOffset.Now,
             opLog ?? [],
@@ -382,6 +397,7 @@ public sealed partial class StatusService(
     List<ComponentIssue> CollectIssues(
         IReadOnlyList<SubsystemStatus> subsystems,
         string syncLogs,
+        string personPollLogs,
         Dictionary<string, string> env,
         PersonSyncSnapshot? personSync = null)
     {
@@ -408,35 +424,8 @@ public sealed partial class StatusService(
 
         foreach (var line in ExtractLogIssues(syncLogs))
         {
-            if (IsPersonPollFetchFailure(line.Message))
-            {
-                // Log tail truncation can leave a partial first line with no timestamp.
-                if (line.At is null)
-                    continue;
-
-                if (IsRecoveredPersonPollFailure(line.At, personSync))
-                    continue;
-
-                var entity = ExtractPersonPollEntity(line.Message);
-                if (!string.IsNullOrWhiteSpace(entity))
-                    activePersonPollFailures.Add(entity);
+            if (IsPersonPollFetchFailure(line.Message) || IsPersonPollStagingPushFailure(line.Message))
                 continue;
-            }
-
-            if (IsPersonPollStagingPushFailure(line.Message))
-            {
-                // Log tail truncation can leave a partial first line with no timestamp.
-                if (line.At is null)
-                    continue;
-
-                if (IsRecoveredPersonPollFailure(line.At, personSync))
-                    continue;
-
-                var entity = ExtractPersonPollStagingPushEntity(line.Message);
-                if (!string.IsNullOrWhiteSpace(entity))
-                    activePersonPollPushFailures.Add(entity);
-                continue;
-            }
 
             if (TryParseDisableEntryFailure(line.Message, out var domain))
             {
@@ -456,11 +445,41 @@ public sealed partial class StatusService(
             Add("Config sync", line.Level, line.Message);
         }
 
+        foreach (var line in ExtractLogIssues(personPollLogs))
+        {
+            if (IsPersonPollFetchFailure(line.Message))
+            {
+                if (line.At is null)
+                    continue;
+
+                if (IsRecoveredPersonPollFailure(line.At, personSync))
+                    continue;
+
+                var entity = ExtractPersonPollEntity(line.Message);
+                if (!string.IsNullOrWhiteSpace(entity))
+                    activePersonPollFailures.Add(entity);
+                continue;
+            }
+
+            if (IsPersonPollStagingPushFailure(line.Message))
+            {
+                if (line.At is null)
+                    continue;
+
+                if (IsRecoveredPersonPollFailure(line.At, personSync))
+                    continue;
+
+                var entity = ExtractPersonPollStagingPushEntity(line.Message);
+                if (!string.IsNullOrWhiteSpace(entity))
+                    activePersonPollPushFailures.Add(entity);
+            }
+        }
+
         if (activePersonPollFailures.Count > 0)
         {
             var count = activePersonPollFailures.Count;
             Add(
-                "Config sync",
+                "Person poll",
                 "warn",
                 count == 1
                     ? $"Person poll failed to fetch prod state for {activePersonPollFailures.First()}"
@@ -471,7 +490,7 @@ public sealed partial class StatusService(
         {
             var count = activePersonPollPushFailures.Count;
             Add(
-                "Config sync",
+                "Person poll",
                 "warn",
                 count == 1
                     ? $"Person poll could not push {activePersonPollPushFailures.First()} to staging — check staging write token"
@@ -553,6 +572,9 @@ public sealed partial class StatusService(
             const string syncPrefix = "ha-staging-kit-sync: ";
             if (msg.StartsWith(syncPrefix, StringComparison.Ordinal))
                 msg = msg[syncPrefix.Length..];
+            const string pollPrefix = "ha-staging-kit-person-poll: ";
+            if (msg.StartsWith(pollPrefix, StringComparison.Ordinal))
+                msg = msg[pollPrefix.Length..];
 
             yield return (level, msg, ParseLogTimestamp(line));
         }

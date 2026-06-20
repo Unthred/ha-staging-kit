@@ -4,6 +4,12 @@ set -euo pipefail
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ha-staging-kit-sync: $*"; }
 
+poll_log() {
+  log "$@"
+  local poll_file="${SIDECAR_DATA:-/sidecar-data}/person-poll.log"
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] ha-staging-kit-person-poll: $*" >>"$poll_file"
+}
+
 strip_cr() {
   local name="$1"
   printf -v "$name" '%s' "${!name//$'\r'/}"
@@ -39,13 +45,22 @@ load_config() {
   OAUTH_PRESERVE_DOMAINS="${OAUTH_PRESERVE_DOMAINS:-smartthings tuya}"
   SKIP_OAUTH_PRESERVE="${SKIP_OAUTH_PRESERVE:-0}"
 
+  GIT_USER_NAME="${GIT_USER_NAME:-ha-staging-kit}"
+  GIT_USER_EMAIL="${GIT_USER_EMAIL:-ha-staging-kit@localhost}"
+
   for v in REPO_DIR HA_CONFIG HA_BRANCH STAGING_HA_URL PERSON_POLL_INTERVAL STORAGE_SYNC_INTERVAL \
     SECRETS_DIR PROD_API_TOKEN_FILE STAGING_API_TOKEN_FILE SSH_KEY_FILE SIDECAR_TEMPLATE \
     HA_SSH HA_SECRETS HA_STORAGE APPLY_ON_START SKIP_STORAGE_SYNC \
     STAGING_MQTT_BROKER STAGING_MQTT_PORT STAGING_HA_TYPE PROD_HA_TYPE SKIP_MQTT_PATCH \
-    OAUTH_PRESERVE_DOMAINS SKIP_OAUTH_PRESERVE; do
+    OAUTH_PRESERVE_DOMAINS SKIP_OAUTH_PRESERVE GIT_USER_NAME GIT_USER_EMAIL; do
     [[ -n "${!v+x}" ]] && strip_cr "$v"
   done
+}
+
+ensure_git_identity() {
+  local repo="${1:-$REPO_DIR}"
+  git -C "$repo" config user.name "$GIT_USER_NAME"
+  git -C "$repo" config user.email "$GIT_USER_EMAIL"
 }
 
 read_token_file() {

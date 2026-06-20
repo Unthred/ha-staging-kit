@@ -7,10 +7,13 @@ namespace HaStagingConsole.Services;
 public sealed class SidecarRunner(ILogger<SidecarRunner> logger)
 {
     const string SyncPattern = "sidecar/sbin/run.sh";
-    static readonly TimeSpan BashTimeout = TimeSpan.FromSeconds(5);
+    static readonly TimeSpan DefaultBashTimeout = TimeSpan.FromSeconds(5);
 
     public Task<(bool Ok, string Message)> RunScriptAsync(string script, CancellationToken ct) =>
-        RunBashAsync(script, ct);
+        RunScriptAsync(script, DefaultBashTimeout, ct);
+
+    public Task<(bool Ok, string Message)> RunScriptAsync(string script, TimeSpan timeout, CancellationToken ct) =>
+        RunBashAsync(EnsureBash(script), timeout, ct);
 
     public Task<bool> IsSyncLoopRunningAsync(CancellationToken ct) =>
         IsProcessRunningAsync(SyncPattern, ct);
@@ -70,6 +73,9 @@ public sealed class SidecarRunner(ILogger<SidecarRunner> logger)
     public Task<string> SyncLogTailAsync(int lines, CancellationToken ct) =>
         ReadTailAsync("/sidecar-data/sync.log", lines, ct);
 
+    public Task<string> PersonPollLogTailAsync(int lines, CancellationToken ct) =>
+        ReadTailAsync("/sidecar-data/person-poll.log", lines, ct);
+
     public async Task AppendSyncLogAsync(string text, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(text))
@@ -90,10 +96,13 @@ public sealed class SidecarRunner(ILogger<SidecarRunner> logger)
         }
     }
 
-    async Task<(bool Ok, string Message)> RunBashAsync(string command, CancellationToken ct)
+    Task<(bool Ok, string Message)> RunBashAsync(string command, CancellationToken ct) =>
+        RunBashAsync(command, DefaultBashTimeout, ct);
+
+    async Task<(bool Ok, string Message)> RunBashAsync(string command, TimeSpan timeout, CancellationToken ct)
     {
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeoutCts.CancelAfter(BashTimeout);
+        timeoutCts.CancelAfter(timeout);
 
         var psi = new ProcessStartInfo("bash")
         {
@@ -114,7 +123,7 @@ public sealed class SidecarRunner(ILogger<SidecarRunner> logger)
             var stdout = await proc.StandardOutput.ReadToEndAsync(timeoutCts.Token);
             var stderr = await proc.StandardError.ReadToEndAsync(timeoutCts.Token);
             await proc.WaitForExitAsync(timeoutCts.Token);
-            var msg = string.IsNullOrWhiteSpace(stdout) ? stderr.Trim() : stdout.Trim();
+            var msg = BuildBashMessage(stdout, stderr, proc.ExitCode);
             if (msg.Length > 4000)
                 msg = msg[^4000..];
             return (proc.ExitCode == 0, string.IsNullOrWhiteSpace(msg) ? $"exit {proc.ExitCode}" : msg);
@@ -122,8 +131,8 @@ public sealed class SidecarRunner(ILogger<SidecarRunner> logger)
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             TryKillProcess(proc);
-            logger.LogWarning("Sidecar bash command timed out after {TimeoutSeconds}s", BashTimeout.TotalSeconds);
-            return (false, $"Command timed out after {BashTimeout.TotalSeconds:F0}s");
+            logger.LogWarning("Sidecar bash command timed out after {TimeoutSeconds}s", timeout.TotalSeconds);
+            return (false, $"Command timed out after {timeout.TotalSeconds:F0}s");
         }
         catch (Exception ex)
         {
@@ -188,5 +197,44 @@ public sealed class SidecarRunner(ILogger<SidecarRunner> logger)
         }
     }
 
+    static string BuildBashMessage(string stdout, string stderr, int exitCode)
+    {
+        var outText = stdout.Trim();
+        var errText = stderr.Trim();
+        if (exitCode != 0 && !string.IsNullOrWhiteSpace(errText))
+        {
+            if (string.IsNullOrWhiteSpace(outText))
+                return errText;
+            if (!outText.Contains(errText, StringComparison.Ordinal))
+                return $"{outText}\n{errText}";
+        }
+
+        return string.IsNullOrWhiteSpace(outText) ? errText : outText;
+    }
+
     static string Quote(string value) => "'" + value.Replace("'", "'\\''") + "'";
+
+    /// <summary>Run .sh paths via bash so missing +x on bind-mounted scripts does not fail.</summary>
+    static string EnsureBash(string command)
+    {
+        var s = command.Trim();
+        if (s.StartsWith("bash ", StringComparison.Ordinal))
+            return s;
+
+        var shIdx = s.IndexOf(".sh", StringComparison.Ordinal);
+        if (shIdx < 0)
+            return s;
+
+        var scriptEnd = shIdx + 3;
+        var scriptStart = s.LastIndexOf(' ', scriptEnd - 1);
+        scriptStart = scriptStart < 0 ? 0 : scriptStart + 1;
+        var scriptPath = s[scriptStart..scriptEnd];
+        if (!scriptPath.StartsWith('/') && !scriptPath.StartsWith("./", StringComparison.Ordinal))
+            return s;
+
+        var prefix = s[..scriptStart];
+        var suffix = s[scriptEnd..].TrimStart();
+        var wrapped = $"{prefix}bash {Quote(scriptPath)}";
+        return suffix.Length > 0 ? $"{wrapped} {suffix}" : wrapped;
+    }
 }

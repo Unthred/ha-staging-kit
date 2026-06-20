@@ -21,6 +21,10 @@ builder.Services.AddSingleton<OnboardingBootstrap>();
 builder.Services.AddSingleton<EnvWriter>();
 builder.Services.AddSingleton<OnboardingTests>();
 builder.Services.AddSingleton<LiveMetricsStore>();
+builder.Services.AddSingleton<HaWebSocketClient>();
+builder.Services.AddSingleton<ProdAutomationExportService>();
+builder.Services.AddSingleton<HaConfigEntryAdminClient>();
+builder.Services.AddSingleton<StagingQuiesceService>();
 builder.Services.AddSingleton<DashboardBuilder>();
 builder.Services.AddSingleton<LovelaceParityDeferStore>();
 builder.Services.AddSingleton<EntityDeployScanStore>();
@@ -41,6 +45,7 @@ builder.Services.AddSingleton<ProdRegistrySnapshotService>();
 builder.Services.AddSingleton<ReleaseAgentService>();
 builder.Services.AddSingleton<LovelaceParityFixService>();
 builder.Services.AddSingleton<WorkbenchResetService>();
+builder.Services.AddSingleton<BaselineFromProdService>();
 builder.Services.AddSingleton<StagingTargetBuilder>();
 builder.Services.AddSingleton<HaInstanceDiagnostics>();
 builder.Services.AddSingleton<StatusService>();
@@ -106,6 +111,12 @@ app.MapGet("/api/dashboard", async (StatusService status, ILogger<Program> log, 
     }
 });
 
+app.MapGet("/api/dashboard/entity-parity/{domain}/details", async (string domain, DashboardBuilder dashboard, CancellationToken ct) =>
+{
+    var details = await dashboard.GetEntityParityDetailsAsync(domain, ct);
+    return details is null ? Results.NotFound() : Results.Ok(details);
+});
+
 app.MapGet("/api/git/changed-files", async (DashboardBuilder dashboard, CancellationToken ct) =>
     Results.Ok(await dashboard.GetGitChangedFilesAsync(ct)));
 
@@ -139,6 +150,28 @@ app.MapGet("/api/git/main-prod-diff", async (string? path, DashboardBuilder dash
     var diff = await dashboard.GetMainProdPendingFileDiffAsync(path, ct);
     return diff is null
         ? Results.NotFound(new { message = "File not found, git not configured, or prod deploy not tracked yet" })
+        : Results.Ok(diff);
+});
+
+app.MapGet("/api/git/staging-prod-lovelace-diff", async (string? path, DashboardBuilder dashboard, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(path))
+        return Results.BadRequest(new { message = "path is required" });
+
+    var diff = await dashboard.GetStagingProdLovelaceFileDiffAsync(path, ct);
+    return diff is null
+        ? Results.NotFound(new { message = "File not found or not a Lovelace bundle path" })
+        : Results.Ok(diff);
+});
+
+app.MapGet("/api/git/unpushed-diff", async (string? path, DashboardBuilder dashboard, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(path))
+        return Results.BadRequest(new { message = "path is required" });
+
+    var diff = await dashboard.GetUnpushedFileDiffAsync(path, ct);
+    return diff is null
+        ? Results.NotFound(new { message = "File not found, git not configured, or nothing queued to push" })
         : Results.Ok(diff);
 });
 
@@ -181,6 +214,8 @@ app.MapPost("/api/operations/storage-sync", async (OperationsService ops, Operat
 { var r = await ops.StorageSyncAsync(ct); opLog.Record("Storage sync", r); return Results.Ok(r); });
 app.MapPost("/api/operations/reset-workbench", async (OperationsService ops, OperationLogService opLog, CancellationToken ct) =>
 { var r = await ops.ResetWorkbenchAsync(ct); opLog.Record("Reset workbench", r); return Results.Ok(r); });
+app.MapPost("/api/operations/baseline-from-prod", async (BaselineFromProdRequest? req, OperationsService ops, OperationLogService opLog, CancellationToken ct) =>
+{ var r = await ops.BaselineFromProdAsync(req, ct); opLog.Record("Baseline from prod", r); return Results.Ok(r); });
 app.MapPost("/api/operations/mirror-mode", async (MirrorModeRequest req, OperationsService ops, OperationLogService opLog, CancellationToken ct) =>
 { var r = await ops.SetMirrorModeAsync(req.ControlMode, ct); opLog.Record("Mirror mode", r); return Results.Ok(r); });
 app.MapPost("/api/operations/deploy-mirror", async (OperationsService ops, OperationLogService opLog, CancellationToken ct) =>
@@ -197,6 +232,8 @@ app.MapPost("/api/operations/deploy-to-prod", async (OperationsService ops, Oper
 { var r = await ops.DeployToProdAsync(ct); opLog.Record("Deploy to prod", r); return Results.Ok(r); });
 app.MapGet("/api/operations/prod-storage-preflight", async (OperationsService ops, CancellationToken ct) =>
     Results.Ok(await ops.PreflightProdStorageDeployAsync(ct)));
+app.MapGet("/api/operations/prod-storage-deploy-gate", async (OperationsService ops, CancellationToken ct) =>
+    Results.Ok(await ops.PreflightProdStorageDeployGateAsync(ct)));
 app.MapGet("/api/operations/prod-storage-preflight/progress", () =>
 {
     var snapshot = PreflightProgressStore.Get();
@@ -225,6 +262,9 @@ app.MapPost("/api/operations/export-migration", async (
 
 app.MapGet("/api/release-agent/plan", async (string? gitRef, ReleaseAgentService agent, CancellationToken ct) =>
     Results.Ok(await agent.PlanAsync(gitRef ?? "origin/main", ct)));
+
+app.MapGet("/api/release-agent/impact", async (string? gitRef, ReleaseAgentService agent, CancellationToken ct) =>
+    Results.Ok(await agent.ImpactAsync(gitRef ?? "origin/main", ct)));
 
 app.MapGet("/api/release-agent/history", async (ReleaseAgentService agent, CancellationToken ct) =>
     Results.Ok(await agent.HistoryAsync(ct)));

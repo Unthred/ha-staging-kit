@@ -8,18 +8,45 @@ import type {
   EntityParitySnapshot,
   GitSnapshot,
   HaMonitoringStats,
+  LovelaceDriftStatus,
   MqttBridgeStats,
   PresenceSummary,
   StagingRepresentationStatus,
 } from "../../api";
+import { useStableMinHeight } from "../../hooks/useStableMinHeight";
 import { dashboardApi, operationsApi } from "../../api";
 import { ActionButton } from "../ActionButton";
 import { GitUncommittedFilesDialog } from "./GitUncommittedFilesDialog";
+import { EntityParityListDialog } from "./EntityParityListDialog";
 import { DashboardParityBanner } from "./DashboardParityBanner";
 import { isMirrorControlMode } from "../../lib/mirrorMode";
-import { prodHaStatusLabel, prodHaYamlPending, prodHelperBundlePending, prodLovelaceBundlePending, prodStorageBundlePending } from "../../lib/gitWorkflow";
+import {
+  dashboardGitColumnLabel,
+  dashboardShipPhase,
+  type DashboardShipPhase,
+  githubCompareAligned,
+  githubCompareGitColumn,
+  githubCompareStagingColumn,
+  lovelaceInGitDirty,
+  prodHaStatusLabel,
+  prodHaYamlPending,
+  prodHelperBundlePending,
+  prodLovelaceBundlePending,
+  prodStorageBundlePending,
+  stagingDocsOnlyOnGitHub,
+  stagingProdPathPending,
+} from "../../lib/gitWorkflow";
 
-export type MonitoringRowKey = "config" | "staging-main" | "main-prod" | "automation" | "script" | "person" | "mqtt" | "sensor";
+export type MonitoringRowKey =
+  | "config"
+  | "staging-main"
+  | "main-prod"
+  | "dashboard"
+  | "automation"
+  | "script"
+  | "person"
+  | "mqtt"
+  | "sensor";
 
 type MetricRow = {
   key: MonitoringRowKey;
@@ -36,7 +63,17 @@ function parityClass(aligned?: boolean) {
   return aligned ? "match" : "diff";
 }
 
-function EntityList({ title, ids, total }: { title: string; ids: string[]; total: number }) {
+function EntityList({
+  title,
+  ids,
+  total,
+  onShowAll,
+}: {
+  title: string;
+  ids: string[];
+  total: number;
+  onShowAll?: () => void;
+}) {
   if (total === 0) return null;
   const extra = total - ids.length;
   return (
@@ -49,7 +86,15 @@ function EntityList({ title, ids, total }: { title: string; ids: string[]; total
           </li>
         ))}
       </ul>
-      {extra > 0 && <p className="muted dash-parity-more">+ {extra} more</p>}
+      {extra > 0 && (
+        onShowAll ? (
+          <button type="button" className="dash-parity-more-btn muted" onClick={onShowAll}>
+            + {extra} more — show all
+          </button>
+        ) : (
+          <p className="muted dash-parity-more">+ {extra} more</p>
+        )
+      )}
     </div>
   );
 }
@@ -75,8 +120,10 @@ function DetailPaneIntro({
 
 function DetailFileColumns({
   columns,
+  onFileClick,
 }: {
   columns: { title: string; files: string[]; variant?: "ha" | "docs" }[];
+  onFileClick?: (path: string) => void;
 }) {
   const visible = columns.filter((c) => c.files.length > 0);
   if (visible.length === 0) return null;
@@ -92,7 +139,13 @@ function DetailFileColumns({
           <ul className="dash-detail-file-list">
             {col.files.map((f) => (
               <li key={f}>
-                <code title={f}>{f}</code>
+                {onFileClick ? (
+                  <button type="button" className="dash-detail-file-btn" onClick={() => onFileClick(f)} title={f}>
+                    <code>{f}</code>
+                  </button>
+                ) : (
+                  <code title={f}>{f}</code>
+                )}
               </li>
             ))}
           </ul>
@@ -136,6 +189,8 @@ function DomainDetail({
   introHint,
   introSummary,
   introTone,
+  automationGitGap,
+  onShowProdOnly,
 }: {
   domain: string;
   domainData?: EntityDomainParity;
@@ -143,6 +198,8 @@ function DomainDetail({
   introHint?: string;
   introSummary?: string;
   introTone?: "ok" | "warn" | "muted";
+  automationGitGap?: import("../../api").AutomationGitGapSnapshot | null;
+  onShowProdOnly?: () => void;
 }) {
   if (!domainData) {
     return (
@@ -179,9 +236,31 @@ function DomainDetail({
       />
       {informational && domainData.prodOnlyCount > 0 && (
         <p className="dash-detail-lead muted">
-          Sensor counts often differ because of mirror timing and unavailable devices — this does not block staging
-          parity.
+          Sensor counts compare live states (not the full entity registry). Staging keeps most entity IDs via
+          storage sync — missing live values are often expected until the MQTT mirror or Phase 2 state mirror
+          fills them in.
         </p>
+      )}
+      {domain === "automation" && automationGitGap?.available && automationGitGap.missingFromGitCount > 0 && (
+        <div className="dash-automation-git-gap">
+          <p className="dash-detail-warn">
+            {automationGitGap.missingFromGitCount} automation(s) run on prod/staging but are not in git YAML (
+            {automationGitGap.gitAutomationCount} in git vs {automationGitGap.haAutomationCount} loaded in HA).
+          </p>
+          <ul className="dash-detail-file-list">
+            {automationGitGap.missingFromGit.map((row) => (
+              <li key={row.id}>
+                <code title={row.entityId}>{row.alias}</code>
+                <span className="muted"> — id {row.id}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="muted dash-detail-lead">
+            These were created or edited in the HA UI and never exported into automations.yaml/packages. Baseline
+            from prod rsyncs YAML only — it does not capture UI-only automation storage. Export them on prod (or
+            copy into git) before the next baseline.
+          </p>
+        </div>
       )}
       <div
         className={`dash-detail-files-grid ${
@@ -197,7 +276,12 @@ function DomainDetail({
           <EntityList title="Extra on staging" ids={stagingOnly.unexpected} total={unexpectedStaging} />
         )}
         {informational && domainData.prodOnlyCount > 0 && (
-          <EntityList title="On production only" ids={domainData.prodOnlySample} total={domainData.prodOnlyCount} />
+          <EntityList
+            title="On production only (live state)"
+            ids={domainData.prodOnlySample}
+            total={domainData.prodOnlyCount}
+            onShowAll={onShowProdOnly}
+          />
         )}
         {stagingOnly.expected.length > 0 && (
           <EntityList title="Expected kit entities on staging" ids={stagingOnly.expected} total={stagingOnly.expected.length} />
@@ -207,26 +291,75 @@ function DomainDetail({
   );
 }
 
+function DashboardShipSteps({
+  git,
+  lovelaceDrift,
+}: {
+  git?: GitSnapshot | null;
+  lovelaceDrift?: LovelaceDriftStatus | null;
+}) {
+  const phase = dashboardShipPhase(git, lovelaceDrift);
+  const steps: { id: DashboardShipPhase; label: string }[] = [
+    { id: "import", label: "Import from staging HA → git workbench" },
+    { id: "commit", label: "Commit staging files" },
+    { id: "push", label: "Push to GitHub" },
+    { id: "merge", label: "Merge staging → main on GitHub" },
+    { id: "release", label: "Request release to prod HA" },
+  ];
+  const order: DashboardShipPhase[] = ["import", "commit", "push", "merge", "release", "done"];
+  const phaseIndex = order.indexOf(phase);
+
+  return (
+    <ol className="dash-detail-ship-steps">
+      {steps.map((step) => {
+        const stepIndex = order.indexOf(step.id);
+        const done = phaseIndex > stepIndex;
+        const current = phase === step.id;
+        return (
+          <li
+            key={step.id}
+            className={`dash-detail-ship-step${done ? " dash-detail-ship-step-done" : ""}${current ? " dash-detail-ship-step-current" : ""}`}
+          >
+            {step.label}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
 function DetailActions({
   rowKey,
   representation,
   configDrift,
   git,
+  lovelaceDrift,
   mirror,
   gitConfigured,
   mirrorConfigured,
   onDone,
+  onCommitOpen,
 }: {
   rowKey: MonitoringRowKey;
   representation?: StagingRepresentationStatus | null;
   configDrift?: ConfigDriftStatus | null;
   git?: GitSnapshot | null;
+  lovelaceDrift?: LovelaceDriftStatus | null;
   mirror?: DashboardStatus["mirror"];
   gitConfigured: boolean;
   mirrorConfigured: boolean;
   onDone?: () => void;
+  onCommitOpen?: () => void;
 }) {
-  const actions: { key: string; label: string; preset: "apply-config" | "person-poll" | "refresh-mirror" | "mirror-readonly"; variant?: "secondary" | "danger"; disabled?: boolean; disabledReason?: string; run: () => ReturnType<typeof operationsApi.applyConfig> }[] = [];
+  const actions: {
+    key: string;
+    label: string;
+    preset: "apply-config" | "person-poll" | "refresh-mirror" | "mirror-readonly" | "snapshot-staging";
+    variant?: "secondary" | "danger";
+    disabled?: boolean;
+    disabledReason?: string;
+    run: () => ReturnType<typeof operationsApi.applyConfig>;
+  }[] = [];
 
   if (rowKey === "config" && configDrift?.hasDrift) {
     if (configDrift.applyGapHasHaChanges) {
@@ -277,7 +410,24 @@ function DetailActions({
     }
   }
 
-  if (actions.length === 0) {
+  const dashboardPhase = rowKey === "dashboard" ? dashboardShipPhase(git, lovelaceDrift) : "done";
+  const showImportDashboard =
+    rowKey === "dashboard" &&
+    ((lovelaceDrift?.stagingDiffersFromRepo ?? false) || dashboardPhase === "import") &&
+    !lovelaceInGitDirty(git);
+  const showCommitDashboard =
+    rowKey === "dashboard" && lovelaceInGitDirty(git) && Boolean(onCommitOpen);
+
+  if (showImportDashboard) {
+    actions.push({
+      key: "import-dashboard",
+      label: "Import from staging HA",
+      preset: "snapshot-staging",
+      run: operationsApi.snapshotFromStaging,
+    });
+  }
+
+  if (actions.length === 0 && !showCommitDashboard) {
     const docsOnlyConfigDrift =
       configDrift?.hasDrift && !configDrift.applyGapHasHaChanges && Boolean(configDrift.lastAppliedCommit);
     const prodHaCurrent = rowKey === "main-prod" && !prodHaYamlPending(git);
@@ -314,7 +464,21 @@ function DetailActions({
             title={action.disabledReason}
           />
         ))}
+        {showCommitDashboard && (
+          <button type="button" className="btn primary" onClick={onCommitOpen}>
+            Commit dashboard change
+          </button>
+        )}
       </div>
+      {rowKey === "dashboard" && dashboardPhase === "push" && (
+        <p className="dash-detail-more muted">Next: use Push to GitHub in the ship workflow below.</p>
+      )}
+      {rowKey === "dashboard" && (dashboardPhase === "merge" || dashboardPhase === "release") && (
+        <p className="dash-detail-more muted">
+          Next: {dashboardPhase === "merge" ? "merge staging → main, then" : ""} request release in the ship workflow
+          below.
+        </p>
+      )}
       <p className="dash-detail-more muted">
         <Link to="/operations">More operations</Link>
       </p>
@@ -340,6 +504,10 @@ function MonitoringDetailPane({
   onShowUncommittedFiles,
   onShowStagingDiff,
   onShowMainProdDiff,
+  onShowStagingProdLovelaceDiff,
+  onShowUnpushedPushPreview,
+  lovelaceDrift,
+  onShowEntityParity,
 }: {
   rowKey: MonitoringRowKey;
   inventory?: ConfigInventoryStats | null;
@@ -349,9 +517,13 @@ function MonitoringDetailPane({
   git?: GitSnapshot | null;
   presence?: PresenceSummary | null;
   mqtt?: MqttBridgeStats | null;
+  lovelaceDrift?: LovelaceDriftStatus | null;
   onShowUncommittedFiles?: () => void;
   onShowStagingDiff?: () => void;
   onShowMainProdDiff?: () => void;
+  onShowStagingProdLovelaceDiff?: () => void;
+  onShowUnpushedPushPreview?: (path?: string) => void;
+  onShowEntityParity?: (domain: string, side: "prodOnly" | "stagingOnly") => void;
 }) {
   const domainMap = new Map((entityParity?.domains ?? []).map((d) => [d.domain, d]));
   const resolvedDomain = monitoringRowDomain(rowKey, entityParity);
@@ -410,43 +582,182 @@ function MonitoringDetailPane({
     );
   }
 
+  if (rowKey === "dashboard") {
+    const changed = lovelaceDrift?.changedPaths ?? [];
+    const differsProd = lovelaceDrift?.stagingDiffersFromProd ?? false;
+    const differsRepo = lovelaceDrift?.stagingDiffersFromRepo ?? false;
+    const shipPhase = dashboardShipPhase(git, lovelaceDrift);
+    const docsOnlyOnGithub = stagingDocsOnlyOnGitHub(git);
+    const lovelaceDirty = lovelaceInGitDirty(git);
+
+    let summary = lovelaceDrift?.detail ?? "Dashboard parity unavailable — check staging mount and prod SSH.";
+    if (lovelaceDirty && shipPhase === "commit") {
+      summary =
+        "Dashboard change is in the git workbench (uncommitted). Commit it, push to GitHub, merge to main, then request release.";
+    } else if (differsRepo && shipPhase === "import") {
+      summary =
+        `Staging HA title is “${lovelaceDrift?.stagingTitle ?? "?"}” but git still has “${lovelaceDrift?.repoTitle ?? "?"}”. ` +
+        "Click Import below, or refresh — the kit will pull staging into git, then you can commit.";
+    } else if (shipPhase === "push") {
+      summary = "Dashboard change is committed locally — push to GitHub next.";
+    } else if (shipPhase === "merge") {
+      summary = "Dashboard is on GitHub staging — merge to main before prod release.";
+    } else if (shipPhase === "release") {
+      summary = "Dashboard is ready for prod — request release when Entity Janitor passes.";
+    }
+
+    return (
+      <>
+        <DetailPaneIntro
+          hint="Live Lovelace on staging HA vs git workbench vs prod — not the same track as docs-only GitHub pushes."
+          summary={summary}
+          tone={shipPhase === "done" ? "ok" : differsProd || differsRepo || lovelaceDirty ? "warn" : lovelaceDrift?.available ? "ok" : undefined}
+        />
+        {(lovelaceDrift?.stagingTitle || lovelaceDrift?.prodTitle || lovelaceDrift?.repoTitle) && (
+          <p className="dash-detail-meta muted">
+            Staging HA: “{lovelaceDrift.stagingTitle ?? "—"}” · Prod: “{lovelaceDrift.prodTitle ?? "—"}” · Git
+            workbench: “{lovelaceDrift.repoTitle ?? "—"}”
+            {docsOnlyOnGithub ? " · Docs push did not ship this file" : ""}
+          </p>
+        )}
+        {shipPhase !== "done" && <DashboardShipSteps git={git} lovelaceDrift={lovelaceDrift} />}
+        <DetailFileColumns
+          columns={[
+            {
+              title: "Lovelace diff (staging HA vs prod)",
+              files: changed.length > 0 ? changed : [".storage/lovelace.lovelace"],
+              variant: "ha",
+            },
+          ]}
+          onFileClick={lovelaceDrift?.available ? () => onShowStagingProdLovelaceDiff?.() : undefined}
+        />
+        <DetailReviewButton
+          label={`Review dashboard diff${changed.length > 0 ? ` (${changed.length} file${changed.length === 1 ? "" : "s"})` : ""}…`}
+          onClick={lovelaceDrift?.available ? onShowStagingProdLovelaceDiff : undefined}
+        />
+        {lovelaceDirty && (
+          <DetailReviewButton label="Review & commit dashboard in git…" onClick={onShowUncommittedFiles} />
+        )}
+      </>
+    );
+  }
+
   if (rowKey === "staging-main") {
     const unpushed = git?.commitsAhead ?? 0;
     const ahead = git?.stagingAheadOfMain ?? 0;
     const haFiles = git?.stagingHaFileList ?? [];
     const repoFiles = git?.stagingRepoFileList ?? [];
     const haCount = git?.stagingHaChanges ?? 0;
+    const unpushedHaFiles = git?.unpushedHaFiles ?? [];
+    const unpushedRepoFiles = git?.unpushedRepoFiles ?? [];
+    const unpushedCommits = git?.unpushedCommits ?? [];
+    const pushTarget = git?.unpushedRemoteRef ?? `origin/${git?.branch ?? "staging"}`;
 
     let summary: string;
     if (unpushed > 0) {
-      summary = `${unpushed} local commit${unpushed === 1 ? "" : "s"} not on GitHub yet — finish Push to GitHub before deploy.`;
+      const commitLine =
+        unpushedCommits.length === 1
+          ? `“${unpushedCommits[0].subject}” (${unpushedCommits[0].shortSha})`
+          : unpushedCommits.length > 1
+            ? `${unpushedCommits.length} commits — newest: “${unpushedCommits[0].subject}”`
+            : git?.commitSubject
+              ? `“${git.commitSubject}” (${git.commitHash ?? "HEAD"})`
+              : `${unpushed} local commit(s)`;
+      const prodNote =
+        unpushedHaFiles.length > 0
+          ? " Includes HA config — merge to main and request release before prod changes."
+          : unpushedRepoFiles.length > 0
+            ? " Docs/repo only — nothing in this push reaches prod HA."
+            : "";
+      summary = `${unpushed} commit${unpushed === 1 ? "" : "s"} will push to ${pushTarget}: ${commitLine}.${prodNote}`;
     } else if ((git?.isHaDirty ?? false) && (git?.haChangedFileCount ?? 0) > 0) {
       summary = `${git!.haChangedFileCount} HA file${git!.haChangedFileCount === 1 ? "" : "s"} changed on staging but not committed — commit before push or deploy.`;
+    } else if (stagingDocsOnlyOnGitHub(git)) {
+      summary =
+        "Docs on GitHub staging only — they never reach prod HA. Nothing to review here once pushed.";
     } else if (ahead === 0) {
       summary = "GitHub staging branch matches main.";
-    } else if (haCount === 0) {
-      summary = `${ahead} commit${ahead === 1 ? "" : "s"} on GitHub staging not on main — docs/scripts only.`;
+    } else if (stagingProdPathPending(git)) {
+      summary = `${ahead} commit${ahead === 1 ? "" : "s"} on GitHub staging (${haCount} HA file${haCount === 1 ? "" : "s"}) not merged to main — stays until prod picks it up.`;
     } else {
-      summary = `${ahead} commit${ahead === 1 ? "" : "s"} on GitHub staging (${haCount} HA file${haCount === 1 ? "" : "s"}) not merged to main.`;
+      summary = "GitHub staging branch matches main for prod-relevant work.";
     }
+
+    const docsOnlyDone = stagingDocsOnlyOnGitHub(git);
+    const showStagingMainDiff = stagingProdPathPending(git);
 
     return (
       <>
         <DetailPaneIntro
-          hint="GitHub staging branch vs main — review before Push to GitHub or Deploy to prod."
+          hint={
+            unpushed > 0
+              ? `Local commits not on GitHub yet — review exactly what Push to GitHub will upload to ${pushTarget}.`
+              : docsOnlyDone
+                ? "Compare Instances tracks the prod path only — docs on GitHub staging are ignored here."
+                : "GitHub staging branch vs main — review HA work before merge or prod release."
+          }
           summary={summary}
-          tone={unpushed > 0 || (git?.isHaDirty ?? false) || (ahead > 0 && haCount > 0) ? "warn" : ahead === 0 ? "ok" : "muted"}
+          tone={
+            unpushed > 0 || (git?.isHaDirty ?? false) || showStagingMainDiff
+              ? "warn"
+              : docsOnlyDone || ahead === 0
+                ? "ok"
+                : "muted"
+          }
         />
-        <DetailFileColumns
-          columns={[
-            { title: "HA config on staging", files: haFiles, variant: "ha" },
-            { title: "Docs / scripts", files: repoFiles, variant: "docs" },
-          ]}
-        />
-        <DetailReviewButton
-          label={`Review ${haFiles.length + repoFiles.length} change${haFiles.length + repoFiles.length === 1 ? "" : "s"} vs main…`}
-          onClick={haFiles.length + repoFiles.length > 0 ? onShowStagingDiff : undefined}
-        />
+        {unpushed > 0 && unpushedCommits.length > 0 && (
+          <ul className="dash-detail-commit-list">
+            {unpushedCommits.map((commit) => (
+              <li key={commit.shortSha}>
+                <code>{commit.shortSha}</code> {commit.subject}
+              </li>
+            ))}
+          </ul>
+        )}
+        {unpushed > 0 ? (
+          <>
+            <DetailFileColumns
+              columns={[
+                {
+                  title: unpushedHaFiles.length > 0 ? "HA files in push" : "HA files in push",
+                  files: unpushedHaFiles,
+                  variant: "ha",
+                },
+                {
+                  title: "Docs / repo in push",
+                  files: unpushedRepoFiles,
+                  variant: "docs",
+                },
+              ]}
+              onFileClick={(path) => onShowUnpushedPushPreview?.(path)}
+            />
+            <DetailReviewButton
+              label={`Review push preview (${unpushedHaFiles.length + unpushedRepoFiles.length} file${unpushedHaFiles.length + unpushedRepoFiles.length === 1 ? "" : "s"})…`}
+              onClick={
+                unpushedHaFiles.length + unpushedRepoFiles.length > 0
+                  ? () => onShowUnpushedPushPreview?.()
+                  : undefined
+              }
+            />
+          </>
+        ) : docsOnlyDone ? null : showStagingMainDiff ? (
+          <>
+            <DetailFileColumns
+              columns={[{ title: "HA config on staging (prod path)", files: haFiles, variant: "ha" }]}
+              onFileClick={haFiles.length > 0 ? () => onShowStagingDiff?.() : undefined}
+            />
+            {repoFiles.length > 0 && (
+              <p className="dash-detail-meta muted">
+                {repoFiles.length} doc/repo file{repoFiles.length === 1 ? "" : "s"} in the same staging
+                commits — already on GitHub; not part of prod deploy.
+              </p>
+            )}
+            <DetailReviewButton
+              label={`Review ${haFiles.length} HA change${haFiles.length === 1 ? "" : "s"} vs main…`}
+              onClick={haFiles.length > 0 ? onShowStagingDiff : undefined}
+            />
+          </>
+        ) : null}
       </>
     );
   }
@@ -609,7 +920,17 @@ function MonitoringDetailPane({
 
   return (
     <div className="dash-detail-files-grid dash-detail-files-grid-single">
-      <DomainDetail domain={rowKey} domainData={resolvedDomain} gitHint={gitHint} />
+      <DomainDetail
+        domain={rowKey}
+        domainData={resolvedDomain}
+        gitHint={gitHint}
+        automationGitGap={rowKey === "automation" ? inventory?.automationGitGap : undefined}
+        onShowProdOnly={
+          resolvedDomain && resolvedDomain.prodOnlyCount > 0
+            ? () => onShowEntityParity?.(rowKey, "prodOnly")
+            : undefined
+        }
+      />
     </div>
   );
 }
@@ -619,13 +940,15 @@ function pickDefaultRow(
   representation?: StagingRepresentationStatus | null,
   entityParity?: EntityParitySnapshot | null,
   git?: GitSnapshot | null,
+  lovelaceDrift?: LovelaceDriftStatus | null,
 ): MonitoringRowKey {
   if (git?.isDirty) return "config";
   if ((git?.commitsAhead ?? 0) > 0) return "staging-main";
-  const prodPending =
-    prodHaYamlPending(git) ||
-    ((git?.stagingAheadOfMain ?? 0) > 0 && (git?.stagingHaChanges ?? 0) > 0);
+  if (stagingProdPathPending(git)) return "staging-main";
+  const prodPending = prodHaYamlPending(git) || stagingProdPathPending(git);
   if (prodPending) return "main-prod";
+  if (representation && representation.lovelaceAligned === false) return "dashboard";
+  if (lovelaceDrift?.stagingDiffersFromProd || lovelaceDrift?.stagingDiffersFromRepo) return "dashboard";
   if (representation && !representation.configMatchesGit) return "config";
   if (entityParity && !entityParity.isAligned) {
     const firstDiff = entityParity.domains.find(
@@ -643,6 +966,7 @@ export function DashboardInstanceMonitoring({
   staging,
   entityParity,
   representation,
+  lovelaceDrift,
   configDrift,
   git,
   presence,
@@ -661,6 +985,7 @@ export function DashboardInstanceMonitoring({
   staging?: HaMonitoringStats | null;
   entityParity?: EntityParitySnapshot | null;
   representation?: StagingRepresentationStatus | null;
+  lovelaceDrift?: LovelaceDriftStatus | null;
   configDrift?: ConfigDriftStatus | null;
   git?: GitSnapshot | null;
   presence?: PresenceSummary | null;
@@ -674,6 +999,7 @@ export function DashboardInstanceMonitoring({
   onCommitClose?: () => void;
   attentionOrder?: number;
 }) {
+  const boardStable = useStableMinHeight("overview-parity-board-v2");
   const rows: MetricRow[] = useMemo(() => {
     const domainAligned = new Map(
       (entityParity?.domains ?? []).map((d) => [
@@ -713,33 +1039,10 @@ export function DashboardInstanceMonitoring({
       {
         key: "staging-main",
         label: "GitHub",
-        git:
-          (git?.commitsAhead ?? 0) > 0
-            ? `${git?.commitsAhead} unpushed`
-            : git?.stagingAheadOfMain == null
-              ? "—"
-              : git.stagingAheadOfMain === 0
-                ? "On main"
-                : `${git.stagingAheadOfMain} on staging`,
+        git: githubCompareGitColumn(git),
         prod: "—",
-        staging:
-          (git?.commitsAhead ?? 0) > 0
-            ? "Push needed"
-            : (git?.isHaDirty ?? false) && (git?.haChangedFileCount ?? 0) > 0
-              ? `${git?.haChangedFileCount ?? 0} HA not committed`
-              : git?.stagingAheadOfMain == null
-                ? "—"
-                : git.stagingAheadOfMain === 0
-                  ? "On main"
-                  : (git?.stagingHaChanges ?? 0) === 0
-                    ? "Docs on staging"
-                    : `${git.stagingHaChanges} HA on staging`,
-        aligned:
-          git?.stagingAheadOfMain == null
-            ? undefined
-            : (git?.commitsAhead ?? 0) === 0 &&
-              !(git?.isHaDirty ?? false) &&
-              git.stagingAheadOfMain === 0,
+        staging: githubCompareStagingColumn(git),
+        aligned: githubCompareAligned(git),
         selectable: true,
       },
       {
@@ -759,6 +1062,18 @@ export function DashboardInstanceMonitoring({
               : prodHaStatusLabel(git),
         staging: "—",
         aligned: !git?.configured || !prodHaYamlPending(git),
+        selectable: true,
+      },
+      {
+        key: "dashboard",
+        label: "Dashboard",
+        git: dashboardGitColumnLabel(git, lovelaceDrift),
+        prod: lovelaceDrift?.prodTitle ?? "—",
+        staging: lovelaceDrift?.stagingTitle ?? "—",
+        aligned:
+          lovelaceDrift?.available == null
+            ? undefined
+            : !lovelaceDrift.stagingDiffersFromProd && !lovelaceDrift.stagingDiffersFromRepo,
         selectable: true,
       },
       {
@@ -804,17 +1119,18 @@ export function DashboardInstanceMonitoring({
         selectable: true,
       },
     ];
-  }, [inventory, prod, staging, git, configDrift, representation, entityParity]);
+  }, [inventory, prod, staging, git, configDrift, representation, entityParity, lovelaceDrift]);
 
   const [selectedKey, setSelectedKey] = useState<MonitoringRowKey>("config");
   const userPicked = useRef(false);
 
   useEffect(() => {
     if (userPicked.current) return;
-    setSelectedKey(pickDefaultRow(rows, representation, entityParity, git));
+    setSelectedKey(pickDefaultRow(rows, representation, entityParity, git, lovelaceDrift));
   }, [
     entityParity,
     representation,
+    lovelaceDrift,
     configDrift?.hasDrift,
     git?.isDirty,
     git?.commitsAhead,
@@ -830,10 +1146,21 @@ export function DashboardInstanceMonitoring({
   const openCommit = onCommitOpen ?? (() => setGitFilesOpenInternal(true));
   const [stagingDiffOpen, setStagingDiffOpen] = useState(false);
   const [mainProdDiffOpen, setMainProdDiffOpen] = useState(false);
+  const [stagingProdLovelaceDiffOpen, setStagingProdLovelaceDiffOpen] = useState(false);
+  const [unpushedPushPreviewOpen, setUnpushedPushPreviewOpen] = useState(false);
+  const [unpushedPreviewInitialPath, setUnpushedPreviewInitialPath] = useState<string | null>(null);
+  const [entityParityOpen, setEntityParityOpen] = useState(false);
+  const [entityParityDomain, setEntityParityDomain] = useState("sensor");
+  const [entityParitySide, setEntityParitySide] = useState<"prodOnly" | "stagingOnly">("prodOnly");
+  const unpushedPushTarget = git?.unpushedRemoteRef ?? `origin/${git?.branch ?? "staging"}`;
+  const lovelaceDiffFiles =
+    lovelaceDrift?.changedPaths && lovelaceDrift.changedPaths.length > 0
+      ? lovelaceDrift.changedPaths
+      : [".storage/lovelace.lovelace"];
 
   return (
     <div id="staging-parity" className="dash-live-primary">
-      <section className="dash-panel dash-parity-board">
+      <section ref={boardStable.ref} style={boardStable.style} className="dash-panel dash-parity-board">
         <header className="dash-parity-board-header">
           <DashboardParityBanner
             embedded
@@ -912,9 +1239,20 @@ export function DashboardInstanceMonitoring({
                 git={git}
                 presence={presence}
                 mqtt={mqtt}
+                lovelaceDrift={lovelaceDrift}
                 onShowUncommittedFiles={openCommit}
                 onShowStagingDiff={() => setStagingDiffOpen(true)}
                 onShowMainProdDiff={() => setMainProdDiffOpen(true)}
+                onShowStagingProdLovelaceDiff={() => setStagingProdLovelaceDiffOpen(true)}
+                onShowUnpushedPushPreview={(path) => {
+                  setUnpushedPreviewInitialPath(path ?? null);
+                  setUnpushedPushPreviewOpen(true);
+                }}
+                onShowEntityParity={(domain, side) => {
+                  setEntityParityDomain(domain);
+                  setEntityParitySide(side);
+                  setEntityParityOpen(true);
+                }}
               />
             </div>
             <DetailActions
@@ -922,10 +1260,12 @@ export function DashboardInstanceMonitoring({
               representation={representation}
               configDrift={configDrift}
               git={git}
+              lovelaceDrift={lovelaceDrift}
               mirror={mirror}
               gitConfigured={gitConfigured ?? false}
               mirrorConfigured={mirrorConfigured ?? false}
               onDone={onRemediate}
+              onCommitOpen={openCommit}
             />
           </section>
         </div>
@@ -947,9 +1287,9 @@ export function DashboardInstanceMonitoring({
         onClose={() => setStagingDiffOpen(false)}
         readOnly
         title="Staged for prod — changes vs main"
-        subtitle="Diff between origin/main and origin/staging · use ←→ to step through"
+        subtitle="Diff between origin/main and origin/staging · HA prod path only · use ←→ to step through"
         overrideHaFiles={git?.stagingHaFileList ?? []}
-        overrideRepoFiles={git?.stagingRepoFileList ?? []}
+        overrideRepoFiles={[]}
         fetchDiff={dashboardApi.stagingDiff}
       />
       <GitUncommittedFilesDialog
@@ -961,6 +1301,44 @@ export function DashboardInstanceMonitoring({
         overrideHaFiles={git?.mainHaFileList ?? []}
         overrideRepoFiles={[]}
         fetchDiff={dashboardApi.mainProdDiff}
+      />
+      <GitUncommittedFilesDialog
+        git={git}
+        open={stagingProdLovelaceDiffOpen}
+        onClose={() => setStagingProdLovelaceDiffOpen(false)}
+        readOnly
+        title="Dashboard — staging HA vs production"
+        subtitle="Live Lovelace .storage diff · production is the left/minus side, staging HA is the right/plus side"
+        overrideHaFiles={lovelaceDiffFiles}
+        overrideRepoFiles={[]}
+        fetchDiff={dashboardApi.stagingProdLovelaceDiff}
+        initialPath={lovelaceDiffFiles[0] ?? ".storage/lovelace.lovelace"}
+      />
+      <GitUncommittedFilesDialog
+        git={git}
+        open={unpushedPushPreviewOpen}
+        onClose={() => {
+          setUnpushedPushPreviewOpen(false);
+          setUnpushedPreviewInitialPath(null);
+        }}
+        readOnly
+        title="Push to GitHub — preview"
+        subtitle={`Queued commits vs ${unpushedPushTarget} · minus = on GitHub now, plus = will push`}
+        overrideHaFiles={git?.unpushedHaFiles ?? []}
+        overrideRepoFiles={git?.unpushedRepoFiles ?? []}
+        fetchDiff={dashboardApi.unpushedDiff}
+        initialPath={unpushedPreviewInitialPath}
+      />
+      <EntityParityListDialog
+        open={entityParityOpen}
+        onClose={() => setEntityParityOpen(false)}
+        domain={entityParityDomain}
+        side={entityParitySide}
+        title={
+          entityParitySide === "prodOnly"
+            ? `${entityParityDomain} — on production only (live state)`
+            : `${entityParityDomain} — on staging only (live state)`
+        }
       />
     </div>
   );

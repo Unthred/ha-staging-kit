@@ -60,6 +60,179 @@ public sealed class ReleaseAgentService(
             string.Join("\n", lines.Where(l => !string.IsNullOrWhiteSpace(l))));
     }
 
+    public async Task<ReleaseImpactPreviewResult> ImpactAsync(string gitRef, CancellationToken ct)
+    {
+        var requestedRef = string.IsNullOrWhiteSpace(gitRef) ? "origin/main" : gitRef.Trim();
+        var previewRef = await operations.ResolveReleasePreviewRefAsync(requestedRef, ct);
+        var mergesStagingFirst = !string.Equals(previewRef, requestedRef, StringComparison.OrdinalIgnoreCase);
+
+        var plan = await PlanAsync(previewRef, ct);
+        if (!plan.Ok || string.IsNullOrWhiteSpace(plan.GitSha))
+        {
+            return new ReleaseImpactPreviewResult(
+                false,
+                plan.Message,
+                "high",
+                true,
+                false,
+                plan.Message,
+                [plan.Message],
+                [],
+                plan.GitSha,
+                plan.ShortSha,
+                null,
+                false,
+                false,
+                false,
+                false,
+                false,
+                plan.RequiresRegistryStop,
+                plan.WillRunManifests,
+                null);
+        }
+
+        var context = await operations.GetReleaseDeployContextAsync(requestedRef, ct);
+        var gate = context.DeployGate;
+        var blockers = BuildImpactBlockers(gate);
+        var warnings = BuildImpactWarnings(context, gate, plan);
+        if (mergesStagingFirst)
+        {
+            warnings.Insert(
+                0,
+                "Release merges GitHub staging into main first — impact includes HA work not yet on main");
+        }
+        var blocksRelease = !gate.Ok;
+        var requiresConfirm = !blocksRelease && warnings.Count > 0;
+        var impactLevel = blocksRelease ? "high" : requiresConfirm ? "medium" : "low";
+        var summary = BuildImpactSummary(plan, context, gate, blocksRelease, warnings.Count);
+
+        return new ReleaseImpactPreviewResult(
+            true,
+            blocksRelease ? "Release blocked — fix new issues before shipping" : "Release impact preview ready",
+            impactLevel,
+            blocksRelease,
+            requiresConfirm,
+            summary,
+            blockers,
+            warnings,
+            plan.GitSha,
+            plan.ShortSha,
+            context.BaselineSha,
+            context.YamlDeploy,
+            context.LovelaceBundleDeploy,
+            context.HelpersDeploy,
+            context.Z2mConfigDeploy,
+            context.RequiresProdRestart,
+            plan.RequiresRegistryStop,
+            plan.WillRunManifests,
+            gate);
+    }
+
+    static List<string> BuildImpactBlockers(ProdStorageDeployGateResult gate)
+    {
+        var blockers = new List<string>();
+        if (gate.DeltaBlockerCount > 0)
+        {
+            if (gate.MissingEntityIssues.Count > 0)
+            {
+                blockers.Add(
+                    $"{gate.MissingEntityIssues.Count} new Lovelace entity reference(s) in this release missing on prod");
+            }
+
+            if (gate.MissingCustomCards.Count > 0)
+            {
+                blockers.Add(
+                    $"{gate.MissingCustomCards.Count} new Lovelace resource URL(s) in this release missing on prod");
+            }
+
+            var z2mBlockers = gate.Z2mConfigIssues.Count(i => i.BlocksDeploy);
+            if (z2mBlockers > 0)
+            {
+                blockers.Add($"{z2mBlockers} new Zigbee2MQTT config issue(s) in this release");
+            }
+        }
+
+        if (!gate.Ok && blockers.Count == 0)
+        {
+            blockers.AddRange(gate.Issues.Where(i =>
+                !i.Contains("pre-existing", StringComparison.OrdinalIgnoreCase) &&
+                !i.Contains("not introduced by this deploy", StringComparison.OrdinalIgnoreCase)));
+        }
+
+        return blockers;
+    }
+
+    static List<string> BuildImpactWarnings(
+        ReleaseDeployContext context,
+        ProdStorageDeployGateResult gate,
+        ReleaseAgentPlanResult plan)
+    {
+        var warnings = new List<string>();
+
+        if (gate.PreExistingMissingCount > 0)
+        {
+            warnings.Add(
+                $"{gate.PreExistingMissingCount} entity reference(s) in git Lovelace already missing on prod — not introduced by this release");
+        }
+
+        if (context.LovelaceBundleDeploy)
+        {
+            var entityNote = gate.NewEntityRefCount > 0 || gate.RemovedEntityRefCount > 0
+                ? $" ({gate.NewEntityRefCount} new, {gate.RemovedEntityRefCount} removed entity refs in diff)"
+                : " (layout/text changes only — no new entity refs)";
+            warnings.Add($"Full Lovelace .storage bundle replace on prod{entityNote}");
+        }
+
+        if (context.HelpersDeploy)
+            warnings.Add("Helper .storage files will be updated on prod");
+
+        if (context.YamlDeploy)
+            warnings.Add("YAML config deploy via git reset on prod");
+
+        if (context.Z2mConfigDeploy)
+            warnings.Add("Zigbee2MQTT configuration.yaml changes — restart the Z2M add-on after release");
+
+        if (plan.WillRunManifests.Count > 0)
+            warnings.Add($"Migrations will run: {string.Join(", ", plan.WillRunManifests)}");
+
+        if (plan.RequiresRegistryStop)
+            warnings.Add("Stops Home Assistant Core briefly for registry migration work");
+
+        if (context.RequiresProdRestart && !context.LovelaceBundleDeploy && !context.HelpersDeploy)
+            warnings.Add("Prod Home Assistant will restart to apply changes");
+
+        return warnings;
+    }
+
+    static string BuildImpactSummary(
+        ReleaseAgentPlanResult plan,
+        ReleaseDeployContext context,
+        ProdStorageDeployGateResult gate,
+        bool blocksRelease,
+        int warningCount)
+    {
+        var shortSha = plan.ShortSha ?? plan.GitSha?[..Math.Min(7, plan.GitSha.Length)] ?? "main";
+        if (blocksRelease)
+        {
+            return gate.DeltaBlockerCount > 0
+                ? $"Release @ {shortSha} blocked — {gate.DeltaBlockerCount} new issue(s) would break prod"
+                : $"Release @ {shortSha} blocked — Entity Janitor could not verify prod safely";
+        }
+
+        if (warningCount > 0)
+        {
+            return $"Release @ {shortSha} — {warningCount} advisory note(s); confirm before applying";
+        }
+
+        if (!context.YamlDeploy && !context.LovelaceBundleDeploy && !context.HelpersDeploy && !context.Z2mConfigDeploy
+            && plan.WillRunManifests.Count == 0)
+        {
+            return $"Release @ {shortSha} — no HA file changes detected";
+        }
+
+        return $"Release @ {shortSha} — low impact; no known breakages detected";
+    }
+
     public async Task<OperationResult> ApplyAsync(ReleaseAgentApplyRequest request, CancellationToken ct)
     {
         if (!AcquireLock())

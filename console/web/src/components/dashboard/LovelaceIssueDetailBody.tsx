@@ -126,7 +126,7 @@ export function LovelaceIssueDetailBody({
 
       <p className="deploy-lovelace-gate-suggestion">
         {isDeferred
-          ? "Deferred — still on the dashboard but excluded from the deploy gate until you restore it."
+          ? "Deferred — still on the dashboard but excluded from Entity Janitor until you restore it."
           : issue.suggestion}
       </p>
 

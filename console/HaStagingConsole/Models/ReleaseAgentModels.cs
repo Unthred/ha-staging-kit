@@ -56,6 +56,37 @@ public sealed record ReleaseAgentPlanResult(
     bool RequiresRegistryStop,
     string? LogTail);
 
+public sealed record ReleaseDeployContext(
+    string? BaselineSha,
+    bool YamlDeploy,
+    bool LovelaceBundleDeploy,
+    bool HelpersDeploy,
+    bool Z2mConfigDeploy,
+    bool RequiresProdRestart,
+    ProdStorageDeployGateResult DeployGate);
+
+/// <summary>Graded release impact — block only on known breakages; confirm on advisory medium.</summary>
+public sealed record ReleaseImpactPreviewResult(
+    bool Ok,
+    string Message,
+    string ImpactLevel,
+    bool BlocksRelease,
+    bool RequiresConfirm,
+    string Summary,
+    IReadOnlyList<string> Blockers,
+    IReadOnlyList<string> Warnings,
+    string? GitSha,
+    string? ShortSha,
+    string? BaselineSha,
+    bool YamlDeploy,
+    bool LovelaceBundleDeploy,
+    bool HelpersDeploy,
+    bool Z2mConfigDeploy,
+    bool RequiresProdRestart,
+    bool RequiresRegistryStop,
+    IReadOnlyList<string> WillRunManifests,
+    ProdStorageDeployGateResult? DeployGate);
+
 public sealed record ReleaseAgentHistoryResult(
     bool Ok,
     string Message,

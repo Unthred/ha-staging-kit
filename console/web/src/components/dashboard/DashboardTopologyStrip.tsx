@@ -9,6 +9,10 @@ function topologyLabel(type?: string | null) {
   return type || null;
 }
 
+/** Matches StagingTargetBuilder.BuildNotes when staging has no add-on store. */
+const DOCKER_NO_ADDONS_NOTE =
+  "Settings → Apps / Add-ons store requires Home Assistant OS. Staging is not HA OS — use this kit console for sync and testing, not HA add-ons.";
+
 function TopologyCell({ children }: { children: ReactNode }) {
   return <div className="dash-topology-grid-cell">{children}</div>;
 }
@@ -28,6 +32,8 @@ export function DashboardTopologyStrip({
   const stagingType = topologyLabel(target?.stagingHaType);
   const yamlPending = git?.configured ? prodHaYamlPending(git) : false;
   const storagePending = git?.configured ? prodStorageBundlePending(git) : false;
+  const showNoAddonStore = target == null || !target.addonsAvailable;
+  const topologyNote = target?.notes ?? (target == null ? DOCKER_NO_ADDONS_NOTE : null);
 
   return (
     <section className="dash-panel dash-topology-strip" aria-label="Environment topology">
@@ -87,16 +93,16 @@ export function DashboardTopologyStrip({
           </span>
           <TopologyCell>{prodType ?? "—"}</TopologyCell>
           <TopologyCell>
-            {stagingType ? (
-              <>
-                {target?.installLabel ?? stagingType}
-                {target && !target.addonsAvailable && (
-                  <span className="dash-topology-tag muted"> · no add-on store</span>
+                {stagingType || target == null ? (
+                  <>
+                    {target?.installLabel ?? stagingType ?? "Docker container"}
+                    {showNoAddonStore && (
+                      <span className="dash-topology-tag muted"> · no add-on store</span>
+                    )}
+                  </>
+                ) : (
+                  "—"
                 )}
-              </>
-            ) : (
-              "—"
-            )}
           </TopologyCell>
         </div>
 
@@ -145,7 +151,7 @@ export function DashboardTopologyStrip({
         </div>
       </div>
 
-      {(yamlPending || storagePending || target?.notes) && (
+      {(yamlPending || storagePending || topologyNote) && (
         <div className="dash-topology-footnotes">
           {(yamlPending || storagePending) && (
             <p className="dash-topology-footnote muted">
@@ -157,7 +163,7 @@ export function DashboardTopologyStrip({
               <Link to="/">Overview</Link>
             </p>
           )}
-          {target?.notes && <p className="dash-topology-footnote muted">{target.notes}</p>}
+          {topologyNote && <p className="dash-topology-footnote muted">{topologyNote}</p>}
         </div>
       )}
     </section>
