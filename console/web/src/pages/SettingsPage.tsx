@@ -10,12 +10,14 @@ import { PathsHelpPanel } from "../components/PathsHelpPanel";
 import { StagingTargetSummary } from "../components/StagingTargetSummary";
 import { TestButton } from "../components/TestButton";
 import { AppearanceSettingsPanel } from "../components/settings/AppearanceSettingsPanel";
+import { ReleaseSafetySettingsPanel } from "../components/settings/ReleaseSafetySettingsPanel";
 import { useNavAttentionContext } from "../context/NavAttentionContext";
 import { useAttentionNavigation } from "../hooks/useAttentionNavigation";
 import { KIT_FQDN } from "../lib/kitHosts";
 
 const SECTIONS = [
   { id: "appearance", title: "Appearance", summary: "Theme, badge colours, and other visual preferences." },
+  { id: "release-safety", title: "Release safety", summary: "Lock prod SSH deploy/fix until release agent is ready." },
   { id: "paths", title: "Paths & git", summary: "Host folders bind-mounted into the kit container." },
   { id: "production", title: "Production connection", summary: "Production HA API and SSH for secrets/storage." },
   { id: "staging", title: "Staging connection", summary: "Staging HA API for REST updates." },
@@ -127,6 +129,7 @@ export default function SettingsPage() {
           <h2>{current.title}</h2>
 
           {sectionId === "appearance" && <AppearanceSettingsPanel />}
+          {sectionId === "release-safety" && <ReleaseSafetySettingsPanel />}
 
           {sectionId === "paths" && (
             <>

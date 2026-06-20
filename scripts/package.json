@@ -1,0 +1,8 @@
+{
+  "name": "ha-staging-kit-scripts",
+  "private": true,
+  "description": "Dev tools for ha-staging-kit (migration validator, etc.)",
+  "dependencies": {
+    "yaml": "^2.8.2"
+  }
+}

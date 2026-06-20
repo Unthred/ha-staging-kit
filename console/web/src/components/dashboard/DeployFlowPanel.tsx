@@ -1,45 +1,65 @@
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import type { ConfigDriftStatus, GitSnapshot } from "../../api";
-import { operationsApi } from "../../api";
+import { operationsApi, releaseAgentApi } from "../../api";
 import { ActionButton } from "../ActionButton";
 import { SectionAttentionBadge } from "../PageAttentionPanel";
-import { DeployLovelaceGatePanel } from "./DeployLovelaceGatePanel";
 import { useDeployFlow, type DeployFlowModel } from "../../hooks/useDeployFlow";
 
-export function DeployFlowGateSection({
+export function DeployFlowGateHint({
   flow,
   attentionOrder,
 }: {
   flow: DeployFlowModel;
   attentionOrder?: number;
 }) {
-  return (
-    <>
-      <div id="deploy-lovelace-gate">
-        <DeployLovelaceGatePanel
-          active={flow.gateRelevant}
-          refreshKey={flow.gateRefreshKey}
-          onStatusChange={flow.setGateStatus}
-          onFixed={flow.bumpGate}
-          attentionOrder={attentionOrder}
-        />
-      </div>
+  if (!flow.gateHintVisible) return null;
 
-      {flow.z2mPending && flow.deployState.pending && !flow.deployBlockMsg && (
-        <div className="deploy-lovelace-gate deploy-lovelace-gate--warn deploy-z2m-post-deploy">
-          <p className="deploy-lovelace-gate-title">After deploy — Zigbee2MQTT checklist</p>
-          <ol className="deploy-lovelace-gate-fix-list">
-            <li>Deploy to prod applies <code>zigbee2mqtt/configuration.yaml</code> via git reset.</li>
-            <li>Restart the <strong>Zigbee2MQTT add-on</strong> on prod HA so the new friendly name loads.</li>
-            <li>Return to Overview — entity scan refreshes automatically.</li>
-            <li>
-              Optional: rename any remaining HA entities (e.g. battery_low) in the HA UI — the kit does not rename
-              prod entities automatically.
-            </li>
-          </ol>
-        </div>
-      )}
-    </>
+  let detail: string;
+  if (flow.gateStatus.busy) {
+    detail = "Scanning prod entities…";
+  } else if (flow.gateStatus.ok === false && flow.gateStatus.missingEntityCount > 0) {
+    detail = `${flow.gateStatus.missingEntityCount} deploy blocker${flow.gateStatus.missingEntityCount === 1 ? "" : "s"} on prod — export migrations and clear blockers before release.`;
+  } else if (flow.gateStatus.ok === false) {
+    detail = "Entity deploy scan failed — review blockers before release.";
+  } else {
+    detail = "Entity deploy scan required before Lovelace or Zigbee2MQTT changes can ship.";
+  }
+
+  return (
+    <div id="deploy-lovelace-gate" className="deploy-flow-gate-hint dash-panel">
+      <div className="deploy-flow-gate-hint-body">
+        <p className="deploy-flow-gate-hint-title">
+          Entity deploy gate
+          <SectionAttentionBadge order={attentionOrder} />
+        </p>
+        <p className="deploy-flow-gate-hint-text">{detail}</p>
+      </div>
+      <Link to="/operations?section=entity-deploy" className="btn secondary btn-compact">
+        Open entity deploy gate
+      </Link>
+    </div>
+  );
+}
+
+export function DeployFlowZ2mChecklist({ flow }: { flow: DeployFlowModel }) {
+  if (!flow.z2mPending || !flow.deployState.pending || flow.deployBlockMsg) return null;
+
+  return (
+    <div className="deploy-lovelace-gate deploy-lovelace-gate--warn deploy-z2m-post-deploy dash-panel">
+      <p className="deploy-lovelace-gate-title">After release — Zigbee2MQTT checklist</p>
+      <ol className="deploy-lovelace-gate-fix-list">
+        <li>Request release applies <code>zigbee2mqtt/configuration.yaml</code> via git reset.</li>
+        <li>Restart the <strong>Zigbee2MQTT add-on</strong> on prod HA so the new friendly name loads.</li>
+        <li>
+          Return to <Link to="/operations?section=entity-deploy">Operations → Entity deploy gate</Link> to rescan if
+          needed.
+        </li>
+        <li>
+          Optional: rename any remaining HA entities (e.g. battery_low) in the HA UI — the kit does not rename prod
+          entities automatically.
+        </li>
+      </ol>
+    </div>
   );
 }
 
@@ -63,7 +83,18 @@ export function DeployFlowShipSection({
       <header className="deploy-flow-compact-head">
         <h3>Ship staging work to production</h3>
         <div className="deploy-flow-compact-head-actions">
-          {flow.git?.prodPreviousDeploySha && (
+          {flow.canReleaseRollback && flow.releaseRollbackTarget && (
+            <ActionButton
+              label={`Rollback release (${flow.releaseRollbackTarget.shortSha})`}
+              compact
+              variant="secondary"
+              title={`Restore prod to release #${flow.releaseRollbackTarget.index} (${flow.releaseRollbackTarget.shortSha})`}
+              toastPreset="rollback-release"
+              onRun={() => releaseAgentApi.rollback({ steps: 1 })}
+              onDone={flow.bumpGate}
+            />
+          )}
+          {!flow.canReleaseRollback && flow.git?.prodPreviousDeploySha && flow.prodWritesEnabled && (
             <ActionButton
               label={`Rollback prod (${flow.git.prodPreviousDeploySha.slice(0, 7)})`}
               compact
@@ -126,23 +157,38 @@ export function DeployFlowShipSection({
             </span>
             <span className="deploy-flow-compact-text">{flow.step3Text}</span>
           </div>
-          <ActionButton
-            label="Deploy to prod"
-            compact
-            disabled={!flow.canDeploy}
-            title={flow.deployTitle}
-            toastPreset="deploy-prod"
-            onRun={operationsApi.deployToProd}
-            onDone={flow.bumpGate}
-            onFailure={() => navigate("/diagnostics")}
-          />
+          <div className="deploy-flow-compact-step-actions">
+            <ActionButton
+              label="Request release"
+              compact
+              disabled={!flow.canRequestRelease}
+              title={flow.requestReleaseTitle}
+              toastPreset="request-release"
+              onRun={() => releaseAgentApi.apply({ gitRef: "origin/main" })}
+              onDone={flow.bumpGate}
+              onFailure={() => navigate("/diagnostics")}
+            />
+            {flow.prodWritesEnabled && (
+              <ActionButton
+                label="Deploy to prod (legacy)"
+                compact
+                variant="secondary"
+                disabled={!flow.canLegacyDeploy}
+                title={flow.legacyDeployTitle}
+                toastPreset="deploy-prod"
+                onRun={operationsApi.deployToProd}
+                onDone={flow.bumpGate}
+                onFailure={() => navigate("/diagnostics")}
+              />
+            )}
+          </div>
         </div>
       </div>
     </section>
   );
 }
 
-/** @deprecated Use DeployFlowGateSection + DeployFlowShipSection with useDeployFlow on the page. */
+/** @deprecated Use DeployFlowGateHint + DeployFlowShipSection with useDeployFlow on the page. */
 export function DeployFlowPanel({
   git,
   gitConfigured,
@@ -168,7 +214,8 @@ export function DeployFlowPanel({
 
   return (
     <>
-      <DeployFlowGateSection flow={flow} attentionOrder={attentionOrders?.gate} />
+      <DeployFlowGateHint flow={flow} attentionOrder={attentionOrders?.gate} />
+      <DeployFlowZ2mChecklist flow={flow} />
       <DeployFlowShipSection flow={flow} onOpenCommit={onOpenCommit} attentionOrders={attentionOrders} />
     </>
   );

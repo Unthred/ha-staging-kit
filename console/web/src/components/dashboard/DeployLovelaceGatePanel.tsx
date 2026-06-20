@@ -11,7 +11,10 @@ import { ActionButton } from "../ActionButton";
 import { SectionAttentionBadge } from "../PageAttentionPanel";
 import { useToast } from "../Toast";
 import { useNavAttentionContext } from "../../context/NavAttentionContext";
+import { isPreflightCacheFresh } from "../../hooks/useNavAttention";
+import { useReleaseSafety } from "../../context/ReleaseSafetyContext";
 import { LovelaceIssueDetailBody } from "./LovelaceIssueDetailBody";
+import { ProdNamingIssueDetailBody, prodNamingIssueKey, prodNamingKindLabel } from "./ProdNamingIssueDetailBody";
 import { DeployLovelaceGateScanProgress } from "./DeployLovelaceGateScanProgress";
 import { usePreflightScanProgress } from "../../hooks/usePreflightScanProgress";
 
@@ -21,7 +24,7 @@ const DEPLOY_GATE_FOCUS_RECHECK_MS = 90_000;
 const DEPLOY_GATE_RESCAN_DEBOUNCE_MS = 1_500;
 
 type LoadMode = "foreground" | "background";
-type ListTab = "blocking" | "awaiting" | "deferred";
+type ListTab = "blocking" | "awaiting" | "deferred" | "naming";
 
 function sortByEntityId<T extends { entityId: string }>(issues: T[]): T[] {
   return [...issues].sort((a, b) => a.entityId.localeCompare(b.entityId));
@@ -133,12 +136,9 @@ function mergeScanWithPendingDefers(
   };
 }
 
-export type LovelaceGateStatus = {
-  active: boolean;
-  busy: boolean;
-  ok: boolean | null;
-  missingEntityCount: number;
-};
+import { gateStatusFromPreflight, type LovelaceGateStatus } from "../../lib/entityDeployGate";
+
+export type { LovelaceGateStatus };
 
 function awaitingFixLabel(action?: string | null): string {
   if (!action) return "Awaiting publish";
@@ -211,14 +211,19 @@ export function DeployLovelaceGatePanel({
   onStatusChange,
   onFixed,
   attentionOrder,
+  layout = "inline",
 }: {
   active: boolean;
   refreshKey: number;
   onStatusChange?: (status: LovelaceGateStatus) => void;
   onFixed?: () => void;
   attentionOrder?: number;
+  /** inline = Overview embed; workspace = full-width Operations page */
+  layout?: "inline" | "workspace";
 }) {
-  const { publishPreflight } = useNavAttentionContext();
+  const { publishPreflight, runPreflight, invalidatePreflight, preflightBusy, preflightScannedAt } =
+    useNavAttentionContext();
+  const { prodWritesEnabled, lockMessage } = useReleaseSafety();
   const { push: pushToast } = useToast();
   const [data, setData] = useState<ProdStoragePreflightResult | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
@@ -228,6 +233,7 @@ export function DeployLovelaceGatePanel({
   const [fixBusy, setFixBusy] = useState(false);
   const [z2mFixBusy, setZ2mFixBusy] = useState(false);
   const [selectedZ2mIeee, setSelectedZ2mIeee] = useState<string | null>(null);
+  const [selectedNamingKey, setSelectedNamingKey] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedChoiceId, setSelectedChoiceId] = useState<string | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
@@ -243,7 +249,7 @@ export function DeployLovelaceGatePanel({
   const listsRef = useRef<HTMLDivElement>(null);
   const [reviewStacked, setReviewStacked] = useState(false);
   const [listTab, setListTab] = useState<ListTab>("blocking");
-  const scanProgress = usePreflightScanProgress(busy);
+  const scanProgress = usePreflightScanProgress(busy || preflightBusy);
 
   useEffect(() => {
     dataRef.current = data;
@@ -259,7 +265,12 @@ export function DeployLovelaceGatePanel({
   const sortedBlockingIssues = useMemo(() => sortByEntityId(blockingIssues), [blockingIssues]);
   const sortedAwaitingIssues = useMemo(() => sortByEntityId(deployMissingIssues), [deployMissingIssues]);
   const sortedDeferredIssues = useMemo(() => sortByEntityId(deferredIssues), [deferredIssues]);
-  const activeListIssues =
+  const prodNamingIssues = data?.prodNamingIssues ?? [];
+  const sortedNamingIssues = useMemo(
+    () => [...prodNamingIssues].sort((a, b) => a.primaryEntityId.localeCompare(b.primaryEntityId)),
+    [prodNamingIssues],
+  );
+  const lovelaceListIssues =
     listTab === "blocking"
       ? sortedBlockingIssues
       : listTab === "awaiting"
@@ -273,6 +284,13 @@ export function DeployLovelaceGatePanel({
   const selectedZ2m = useMemo(
     () => z2mIssues.find((issue) => issue.liveIeee === selectedZ2mIeee) ?? z2mIssues[0] ?? null,
     [selectedZ2mIeee, z2mIssues],
+  );
+  const selectedNaming = useMemo(
+    () =>
+      prodNamingIssues.find((issue) => prodNamingIssueKey(issue) === selectedNamingKey) ??
+      sortedNamingIssues[0] ??
+      null,
+    [selectedNamingKey, prodNamingIssues, sortedNamingIssues],
   );
   const allIssues = useMemo(
     () => [...blockingIssues, ...deferredIssues, ...deployMissingIssues],
@@ -316,30 +334,16 @@ export function DeployLovelaceGatePanel({
     [onStatusChange],
   );
 
-  const gateStatusFromResult = useCallback((result: ProdStoragePreflightResult): LovelaceGateStatus => {
-    const noScanPending = result.issues.some(
-      (i) =>
-        i.includes("No Lovelace bundle or zigbee2mqtt changes") ||
-        i.includes("No Lovelace bundle changes pending"),
-    );
-    const z2mBlockers = result.z2mConfigIssues.filter((issue) => issue.blocksDeploy).length;
-    const entityBlockers = noScanPending ? 0 : result.missingEntityIssues.length;
-    const count = noScanPending ? z2mBlockers : entityBlockers + z2mBlockers;
-    const blockersRemain = entityBlockers + z2mBlockers > 0;
-    return {
-      active: true,
-      busy: false,
-      ok: noScanPending ? z2mBlockers === 0 : blockersRemain ? false : result.ok,
-      missingEntityCount: count,
-    };
-  }, []);
+  const gateStatusFromResult = useCallback(
+    (result: ProdStoragePreflightResult): LovelaceGateStatus => gateStatusFromPreflight(result),
+    [],
+  );
 
-  const load = useCallback(async (preferSelectId?: string | null, mode: LoadMode = "foreground") => {
+  const load = useCallback(async (preferSelectId?: string | null, mode: LoadMode = "foreground", force = false) => {
     if (!active) {
       setData(null);
       setError(null);
       setSelectedId(null);
-      publishPreflight(null);
       report({ active: false, busy: false, ok: null, missingEntityCount: 0 });
       return;
     }
@@ -353,6 +357,7 @@ export function DeployLovelaceGatePanel({
     preferSelectAfterLoadRef.current = undefined;
 
     const background = mode === "background";
+    const willScan = force || background || !isPreflightCacheFresh(preflightScannedAt);
     if (!background) {
       pendingFixedIdsRef.current.clear();
       pendingDeferredIdsRef.current.clear();
@@ -360,13 +365,16 @@ export function DeployLovelaceGatePanel({
     }
     if (background) {
       setBackgroundScanning(true);
-    } else {
+    } else if (willScan) {
       setScanError(null);
       setBusy(true);
       report({ active: true, busy: true, ok: null, missingEntityCount: 0 });
+    } else {
+      setScanError(null);
+      setError(null);
     }
     try {
-      const result = await operationsApi.prodStoragePreflight();
+      const result = await runPreflight({ force: force || background });
       let merged = mergeScanWithPendingFixes(result, pendingFixedIdsRef.current);
       merged = mergeScanWithPendingDefers(merged, pendingDeferredIdsRef.current);
       if (background && dataRef.current) {
@@ -417,6 +425,15 @@ export function DeployLovelaceGatePanel({
       } else {
         setSelectedZ2mIeee(null);
       }
+      if (merged.prodNamingIssues.length > 0) {
+        setSelectedNamingKey((current) =>
+          current && merged.prodNamingIssues.some((issue) => prodNamingIssueKey(issue) === current)
+            ? current
+            : prodNamingIssueKey(merged.prodNamingIssues[0]!),
+        );
+      } else {
+        setSelectedNamingKey(null);
+      }
       report(gateStatusFromResult(merged));
       lastScanAtRef.current = Date.now();
     } catch (e) {
@@ -426,7 +443,7 @@ export function DeployLovelaceGatePanel({
       } else {
         setError(apiError);
         setData(null);
-        publishPreflight(null);
+        invalidatePreflight();
         setSelectedId(null);
       }
       report({ active: true, busy: false, ok: false, missingEntityCount: 0 });
@@ -434,12 +451,11 @@ export function DeployLovelaceGatePanel({
       if (background) setBackgroundScanning(false);
       else setBusy(false);
     }
-  }, [active, gateStatusFromResult, publishPreflight, report]);
+  }, [active, gateStatusFromResult, invalidatePreflight, preflightScannedAt, publishPreflight, report, runPreflight]);
 
   useEffect(() => {
     if (!active) {
       initialLoadRef.current = false;
-      void load(undefined, "foreground");
       return;
     }
     if (!initialLoadRef.current) {
@@ -510,7 +526,7 @@ export function DeployLovelaceGatePanel({
         ?.scrollIntoView({ block: "nearest", behavior: "instant" });
     });
     return () => cancelAnimationFrame(frame);
-  }, [selectedId, listTab, activeListIssues.length]);
+  }, [selectedId, selectedNamingKey, listTab, lovelaceListIssues.length, sortedNamingIssues.length]);
 
   const applyOptimisticFix = useCallback(
     (entityId: string, action: LovelaceFixOption["action"]) => {
@@ -748,7 +764,7 @@ export function DeployLovelaceGatePanel({
 
   if (!active) return null;
 
-  if (busy && !data) {
+  if ((busy || preflightBusy) && !data) {
     return (
       <div className="deploy-lovelace-gate deploy-lovelace-gate--loading">
         <p className="deploy-lovelace-gate-title">Entity deploy scan</p>
@@ -762,7 +778,7 @@ export function DeployLovelaceGatePanel({
       <div className="deploy-lovelace-gate deploy-lovelace-gate--warn">
         <GateTitle attentionOrder={attentionOrder}>Could not run entity deploy scan</GateTitle>
         <p className="muted">{error.message}</p>
-        <button type="button" className="btn secondary btn-compact" onClick={() => void load()}>
+        <button type="button" className="btn secondary btn-compact" onClick={() => void load(undefined, "foreground", true)}>
           Retry check
         </button>
       </div>
@@ -776,9 +792,15 @@ export function DeployLovelaceGatePanel({
       i.includes("No Lovelace bundle or zigbee2mqtt changes") ||
       i.includes("No Lovelace bundle changes pending"),
   );
-  if (noScanPending && z2mIssues.length === 0) return null;
+  if (noScanPending && z2mIssues.length === 0 && prodNamingIssues.length === 0) return null;
 
-  if (data.ok && deferredIssues.length === 0 && !data.pendingCommit && z2mIssues.length === 0) {
+  if (
+    data.ok &&
+    deferredIssues.length === 0 &&
+    !data.pendingCommit &&
+    z2mIssues.length === 0 &&
+    prodNamingIssues.length === 0
+  ) {
     return (
       <div className="deploy-lovelace-gate deploy-lovelace-gate--ok">
         <GateTitle attentionOrder={attentionOrder}>
@@ -795,12 +817,17 @@ export function DeployLovelaceGatePanel({
   const resourceCount = data.missingCustomCards.length;
   const showReview = true;
   const showZ2m = z2mIssues.length > 0;
+  const showNamingTab = prodNamingIssues.length > 0;
   const recheck = data.recheck;
   const showRevertAllFixes =
     deployMissingIssues.length > 0 || data.fixedLocallyCount > 0 || data.canUndoLovelaceFix;
   const showUndoMenu = data.canUndoLovelaceFix || showRevertAllFixes;
   const scanSummary = data.issues.find((issue) => issue.startsWith("Scan summary:"));
-  const statusIssues = data.issues.filter((issue) => !issue.startsWith("Scan summary:"));
+  const statusIssues = data.issues.filter(
+    (issue) =>
+      !issue.startsWith("Scan summary:") &&
+      !issue.includes("prod entity naming issue(s)"),
+  );
   const invalidJsonIssue = statusIssues.find(isJsonParseIssue);
   const publishPending =
     Boolean(data.pendingCommit && blockingIssues.length === 0 && !backgroundScanning);
@@ -812,9 +839,11 @@ export function DeployLovelaceGatePanel({
         ? `${blockingIssues.length} still need fixes in the draft · ${deployMissingIssues.length} already fixed locally and awaiting publish.`
         : blockingIssues.length > 0 || blockingZ2mIssues.length > 0
           ? "Select a blocker — fix steps and kit actions are in the detail panel."
-          : blockingIssues.length === 0 && deferredIssues.length > 0
+            : blockingIssues.length === 0 && deferredIssues.length > 0
             ? "Deferred entities won't block deploy, but cards may error on prod until you fix or restore them."
-            : "Compares the deploy dashboard with live prod. Deploy never renames prod entities automatically.";
+            : showNamingTab
+              ? "Blocking tab covers deploy. Naming tab lists prod `_2` / cast suffix cleanups — select one for fix steps."
+              : "Compares the deploy dashboard with live prod. Deploy never renames prod entities automatically.";
   const showRecheckDelta =
     recheck &&
     (recheck.resolvedEntityIds.length > 0 || recheck.newEntityIds.length > 0) &&
@@ -829,7 +858,7 @@ export function DeployLovelaceGatePanel({
 
   return (
     <div
-      className={`deploy-lovelace-gate ${blockingIssues.length === 0 ? "deploy-lovelace-gate--warn" : "deploy-lovelace-gate--blocked"}${reviewStacked ? " deploy-lovelace-gate--stacked" : ""}`}
+      className={`deploy-lovelace-gate ${blockingIssues.length === 0 ? "deploy-lovelace-gate--warn" : "deploy-lovelace-gate--blocked"}${reviewStacked ? " deploy-lovelace-gate--stacked" : ""}${layout === "workspace" ? " deploy-lovelace-gate--workspace-layout" : ""}`}
     >
       <div className="deploy-lovelace-gate-toolbar">
         <div className="deploy-lovelace-gate-toolbar-main">
@@ -841,6 +870,9 @@ export function DeployLovelaceGatePanel({
             <span className="deploy-lovelace-gate-chip">{blockingIssues.length} blocking</span>
             <span className="deploy-lovelace-gate-chip">{deployMissingIssues.length} awaiting</span>
             <span className="deploy-lovelace-gate-chip">{deferredIssues.length} deferred</span>
+            {showNamingTab && (
+              <span className="deploy-lovelace-gate-chip">{prodNamingIssues.length} naming</span>
+            )}
           </div>
           <span
             className="deploy-lovelace-gate-scan-inline"
@@ -936,6 +968,17 @@ export function DeployLovelaceGatePanel({
                 >
                   Deferred ({deferredIssues.length})
                 </button>
+                {showNamingTab && (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={listTab === "naming"}
+                    className={`deploy-lovelace-gate-list-tab${listTab === "naming" ? " active" : ""}`}
+                    onClick={() => setListTab("naming")}
+                  >
+                    Naming ({prodNamingIssues.length})
+                  </button>
+                )}
               </div>
               <div className="deploy-lovelace-gate-lists" ref={listsRef}>
                 {listTab === "awaiting" && deployMissingIssues.length > 0 && (
@@ -948,9 +991,51 @@ export function DeployLovelaceGatePanel({
                     Won&apos;t block deploy — cards may show errors on prod until you fix or restore them.
                   </p>
                 )}
-                {activeListIssues.length > 0 ? (
+                {listTab === "naming" && prodNamingIssues.length > 0 && (
+                  <p className="muted deploy-lovelace-gate-tab-hint">
+                    Prod registry cleanups — numeric <code>_2</code> suffixes and cast entities that should use{" "}
+                    <code>_cast</code>. Won&apos;t block deploy; select one for fix steps.
+                  </p>
+                )}
+                {listTab === "naming" ? (
+                  sortedNamingIssues.length > 0 ? (
+                    <ul className="deploy-lovelace-gate-issue-list">
+                      {sortedNamingIssues.map((issue) => {
+                        const key = prodNamingIssueKey(issue);
+                        return (
+                          <li key={key}>
+                            <button
+                              type="button"
+                              className={`deploy-lovelace-gate-issue ${
+                                selectedNaming && prodNamingIssueKey(selectedNaming) === key ? "active" : ""
+                              }`}
+                              onClick={() => setSelectedNamingKey(key)}
+                            >
+                              <code>{issue.primaryEntityId}</code>
+                              <span className="deploy-lovelace-gate-kind deploy-lovelace-gate-kind--prod_typo">
+                                {issue.kind === "suffix_collision" ? "Suffix _2" : "Use _cast"}
+                              </span>
+                              <span className="deploy-lovelace-gate-issue-meta muted">
+                                {issue.expectedEntityId &&
+                                issue.wrongEntityId &&
+                                issue.expectedEntityId !== issue.primaryEntityId
+                                  ? `${issue.wrongEntityId} → ${issue.expectedEntityId}`
+                                  : issue.deviceName ?? issue.livePlatform ?? prodNamingKindLabel(issue.kind)}
+                                {issue.gitReferences.length > 0
+                                  ? ` · ${issue.gitReferences.length} git ref(s)`
+                                  : ""}
+                              </span>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ) : (
+                    <p className="muted deploy-lovelace-gate-section-empty">None</p>
+                  )
+                ) : lovelaceListIssues.length > 0 ? (
                   <ul className="deploy-lovelace-gate-issue-list">
-                    {activeListIssues.map((issue) => (
+                    {lovelaceListIssues.map((issue) => (
                       <li key={issue.entityId}>
                         <button
                           type="button"
@@ -988,7 +1073,7 @@ export function DeployLovelaceGatePanel({
                 ) : (
                   <p className="muted deploy-lovelace-gate-section-empty">
                     {listTab === "blocking"
-                      ? "No blockers — check Awaiting or Deferred tabs if needed."
+                      ? "No blockers — check Awaiting, Deferred, or Naming tabs if needed."
                       : "None"}
                   </p>
                 )}
@@ -996,7 +1081,24 @@ export function DeployLovelaceGatePanel({
             </div>
 
             <div className="deploy-lovelace-gate-detail-column">
-              {selected ? (
+              {listTab === "naming" && selectedNaming ? (
+                <div className="deploy-lovelace-gate-detail">
+                  <div className="deploy-lovelace-gate-detail-scroll">
+                    <ProdNamingIssueDetailBody
+                      issue={selectedNaming}
+                      fixBusy={fixBusy}
+                      allowProdFix={prodWritesEnabled}
+                      prodWritesLockMessage={lockMessage}
+                      onProdFixDone={() => {
+                        onFixed?.();
+                        void load(undefined, "background");
+                      }}
+                      onProdFixFailure={() => undefined}
+                      onExportDone={() => void load(undefined, "background")}
+                    />
+                  </div>
+                </div>
+              ) : listTab !== "naming" && selected ? (
                 <div className="deploy-lovelace-gate-detail">
                   <div className="deploy-lovelace-gate-detail-scroll">
                     <LovelaceIssueDetailBody
@@ -1004,7 +1106,9 @@ export function DeployLovelaceGatePanel({
                       isDeferred={selectedIsDeferred}
                       measure={selectedAwaitsPublish}
                       awaitingPublishAction={selected.awaitingPublishAction}
-                      allowProdRegistryPurge={data.allowProdRegistryPurge}
+                      allowProdRegistryPurge={data.allowProdRegistryPurge && prodWritesEnabled}
+                      allowProdFix={prodWritesEnabled}
+                      prodWritesLockMessage={lockMessage}
                       confirmPurgeDeleted={confirmPurgeDeleted}
                       setConfirmPurgeDeleted={setConfirmPurgeDeleted}
                       selectedChoiceId={selectedChoiceId}
@@ -1023,11 +1127,16 @@ export function DeployLovelaceGatePanel({
                         void load(undefined, "foreground");
                       }}
                       onProdSuffixFixFailure={() => undefined}
+                      onExportDone={() => void load(undefined, "background")}
                     />
                   </div>
                 </div>
               ) : (
-                <p className="muted deploy-lovelace-gate-detail-placeholder">Select a blocker from the list.</p>
+                <p className="muted deploy-lovelace-gate-detail-placeholder">
+                  {listTab === "naming"
+                    ? "Select a prod naming issue from the list."
+                    : "Select an issue from the list."}
+                </p>
               )}
             </div>
           </div>

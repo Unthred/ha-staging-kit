@@ -176,7 +176,8 @@ public sealed class ProdEntitySuffixFixService(
     public async Task<OperationResult> FixWrongEntityIdAsync(
         string expectedEntityId,
         string wrongProdEntityId,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool relaxedUniqueId = false)
     {
         if (string.IsNullOrWhiteSpace(expectedEntityId) || string.IsNullOrWhiteSpace(wrongProdEntityId))
             return new OperationResult(false, "Expected and wrong prod entity ids are required", null);
@@ -209,7 +210,8 @@ public sealed class ProdEntitySuffixFixService(
         var expectedObject = expected.Contains('.', StringComparison.Ordinal)
             ? expected[(expected.IndexOf('.') + 1)..]
             : expected;
-        if (!string.IsNullOrWhiteSpace(live.UniqueId)
+        if (!relaxedUniqueId
+            && !string.IsNullOrWhiteSpace(live.UniqueId)
             && !string.Equals(live.UniqueId, expectedObject, StringComparison.OrdinalIgnoreCase))
         {
             return new OperationResult(

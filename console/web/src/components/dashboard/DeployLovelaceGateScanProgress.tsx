@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { PreflightProgressSnapshot } from "../../api";
+import type { PreflightScanProgressView } from "../../hooks/usePreflightScanProgress";
 
 function elapsedSeconds(startedAt: string): number {
   const started = Date.parse(startedAt);
@@ -12,7 +12,7 @@ export function DeployLovelaceGateScanProgress({
   fallbackLabel = "Running entity deploy scan…",
   overlay = false,
 }: {
-  progress: PreflightProgressSnapshot | null;
+  progress: PreflightScanProgressView | null;
   fallbackLabel?: string;
   /** When true, renders as an in-workspace overlay instead of a block above the list. */
   overlay?: boolean;
@@ -33,7 +33,9 @@ export function DeployLovelaceGateScanProgress({
   const step = progress?.step ?? 0;
   const total = progress?.totalSteps ?? 1;
   const label = progress?.label?.trim() || fallbackLabel;
-  const width = step > 0 ? Math.max(6, (step / Math.max(total, 1)) * 100) : progress?.active ? 6 : 0;
+  const fraction = progress?.displayFraction ?? (progress?.active ? 0.04 : 0);
+  const width = Math.max(4, Math.min(100, fraction * 100));
+  const showIndeterminate = step === 0 && fraction <= 0.04;
 
   return (
     <div
@@ -44,14 +46,14 @@ export function DeployLovelaceGateScanProgress({
     >
       <div className="progress-bar deploy-lovelace-gate-scan-bar">
         <div
-          className={`progress-fill ${step === 0 ? "progress-fill-indeterminate" : "progress-fill-active"}`}
-          style={step === 0 ? undefined : { width: `${width}%` }}
+          className={`progress-fill ${showIndeterminate ? "progress-fill-indeterminate" : "progress-fill-active"}`}
+          style={showIndeterminate ? undefined : { width: `${width}%` }}
         />
       </div>
       <span className="progress-label">
         {label}
         {elapsed > 0 ? ` · ${elapsed}s` : ""}
-        {step > 0 ? ` · step ${step} of ${total}` : ""}
+        {step > 0 ? ` · step ${Math.min(step, total)} of ${total}` : ""}
       </span>
     </div>
   );

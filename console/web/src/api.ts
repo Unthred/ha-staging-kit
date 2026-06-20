@@ -4,6 +4,52 @@ export type TestResult = { ok: boolean; message: string };
 export type DeployResult = { ok: boolean; message: string; logTail?: string };
 export type OperationResult = { ok: boolean; message: string; logTail?: string | null };
 
+export type ReleaseHistoryEntry = {
+  index: number;
+  sha: string;
+  shortSha: string;
+  appliedAt: string;
+  gitRef: string;
+  message?: string | null;
+  migrationsApplied: string[];
+  yamlDeployed: boolean;
+  storageBundlePaths: string[];
+  registrySnapshot?: string | null;
+  deviceRegistrySnapshot?: string | null;
+  reportPath?: string | null;
+};
+
+export type ReleaseAgentPlanResult = {
+  ok: boolean;
+  message: string;
+  gitSha?: string | null;
+  shortSha?: string | null;
+  pendingManifests: string[];
+  skippedManifests: string[];
+  willRunManifests: string[];
+  requiresRegistryStop: boolean;
+  logTail?: string | null;
+};
+
+export type ReleaseAgentHistoryResult = {
+  ok: boolean;
+  message: string;
+  releases: ReleaseHistoryEntry[];
+  currentIndex: number;
+};
+
+export type ReleaseAgentApplyRequest = {
+  gitRef?: string;
+  message?: string | null;
+  mergeStaging?: boolean;
+};
+
+export type ReleaseAgentRollbackRequest = {
+  steps?: number | null;
+  toSha?: string | null;
+  toIndex?: number | null;
+};
+
 export type EntityDeployRecheckDelta = {
   resolvedEntityIds: string[];
   newEntityIds: string[];
@@ -43,6 +89,25 @@ export type ProdStoragePreflightResult = {
   /** Issues still on GitHub main / published bundle (after local draft fixes) */
   deployMissingEntityIssues: LovelaceMissingEntityIssue[];
   allowProdRegistryPurge: boolean;
+  /** Prod registry `_2` / numeric cast suffix issues — advisory, does not block deploy */
+  prodNamingIssues: ProdEntityNamingIssue[];
+};
+
+export type ProdEntityNamingIssue = {
+  primaryEntityId: string;
+  kind: "suffix_collision" | "cast_numeric_suffix" | string;
+  summary: string;
+  manualFixSummary: string;
+  expectedEntityId?: string | null;
+  wrongEntityId?: string | null;
+  blockerEntityId?: string | null;
+  blockerPlatform?: string | null;
+  blockerDisabledBy?: string | null;
+  livePlatform?: string | null;
+  deviceName?: string | null;
+  prodFixSteps: string[];
+  prodFixAction?: "suffix-collision" | "registry-rename" | null;
+  gitReferences: string[];
 };
 
 export type Z2mStaleConfigEntry = {
@@ -137,6 +202,21 @@ export type LovelaceParityFixResult = {
   changeCount: number;
 };
 
+export type ExportMigrationResult = {
+  ok: boolean;
+  message: string;
+  manifestPath?: string | null;
+  manifestId?: string | null;
+  gitFilesChanged: string[];
+  gitChangeCount: number;
+};
+
+export type ExportMigrationRequest = {
+  source: "naming" | "deploy-gate";
+  naming?: ProdEntityNamingIssue | null;
+  deployGate?: LovelaceMissingEntityIssue | null;
+};
+
 export type OnboardingStatus = {
   currentStep: number;
   completedSteps: string[];
@@ -217,6 +297,12 @@ export type DashboardStatus = {
   haIssues: ComponentIssue[];
   liveMetrics?: LiveMetricsSnapshot | null;
   refreshedAt: string;
+  releaseSafety: ReleaseSafetyView;
+};
+
+export type ReleaseSafetyView = {
+  prodWritesEnabled: boolean;
+  lockMessage?: string | null;
 };
 
 export type LiveMetricsSnapshot = {
@@ -535,6 +621,7 @@ export type SettingsView = {
   stagingHaContainer?: string | null;
   stagingTarget?: StagingTargetSnapshot | null;
   appearance: AppearanceSettingsView;
+  releaseSafety: ReleaseSafetyView;
 };
 
 export type ContainerStatus = {
@@ -746,6 +833,50 @@ export type DiagnosticsStatus = {
   prodHaUrl?: string | null;
 };
 
+export type ActivityEvent = {
+  id: string;
+  instance: string;
+  at: string;
+  entityId: string;
+  domain: string;
+  name: string;
+  message: string;
+  parityMatch?: boolean;
+};
+
+export type ActivityInstanceStatus = {
+  instance: string;
+  state: string;
+  detail?: string | null;
+};
+
+export type ActivitySnapshot = {
+  events: ActivityEvent[];
+  statuses: ActivityInstanceStatus[];
+  refreshedAt: string;
+};
+
+export type ActivityEntitySuggestion = {
+  entityId: string;
+  name: string;
+  domain: string;
+  instances: string[];
+};
+
+export type ActivitySuggestionsSnapshot = {
+  items: ActivityEntitySuggestion[];
+  automationCount: number;
+  scriptCount: number;
+  prodAvailable: boolean;
+  stagingAvailable: boolean;
+  refreshedAt: string;
+};
+
+export const activityApi = {
+  snapshot: () => api<ActivitySnapshot>("/api/activity/snapshot"),
+  suggestions: () => api<ActivitySuggestionsSnapshot>("/api/activity/suggestions"),
+};
+
 export const diagnosticsApi = {
   status: () => api<DiagnosticsStatus>("/api/diagnostics"),
 };
@@ -754,6 +885,11 @@ export const settingsApi = {
   get: () => api<SettingsView>("/api/settings"),
   saveAppearance: (appearance: AppearanceSettingsView) =>
     api<AppearanceSettingsView>("/api/settings/appearance", { method: "POST", body: JSON.stringify(appearance) }),
+  saveReleaseSafety: (prodWritesEnabled: boolean) =>
+    api<ReleaseSafetyView>("/api/settings/release-safety", {
+      method: "POST",
+      body: JSON.stringify({ prodWritesEnabled }),
+    }),
   save: (body: SettingsView & {
     prodUrl: string;
     prodToken?: string;
@@ -800,10 +936,10 @@ export const operationsApi = {
       method: "POST",
       body: JSON.stringify({ expectedEntityId, suffixProdEntityId }),
     }),
-  fixProdEntityId: (expectedEntityId: string, wrongProdEntityId: string) =>
+  fixProdEntityId: (expectedEntityId: string, wrongProdEntityId: string, relaxedUniqueId = false) =>
     api<OperationResult>("/api/operations/fix-prod-entity-id", {
       method: "POST",
-      body: JSON.stringify({ expectedEntityId, wrongProdEntityId }),
+      body: JSON.stringify({ expectedEntityId, wrongProdEntityId, relaxedUniqueId }),
     }),
   fixZ2mConfig: (body: {
     liveIeee: string;
@@ -814,7 +950,32 @@ export const operationsApi = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  exportMigration: (body: ExportMigrationRequest) =>
+    api<ExportMigrationResult>("/api/operations/export-migration", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   rollbackProd: () => api<OperationResult>("/api/operations/rollback-prod", { method: "POST" }),
+};
+
+export const releaseAgentApi = {
+  plan: (gitRef = "origin/main") =>
+    api<ReleaseAgentPlanResult>(`/api/release-agent/plan?gitRef=${encodeURIComponent(gitRef)}`),
+  history: () => api<ReleaseAgentHistoryResult>("/api/release-agent/history"),
+  apply: (body: ReleaseAgentApplyRequest = {}) =>
+    api<OperationResult>("/api/release-agent/apply", {
+      method: "POST",
+      body: JSON.stringify({
+        gitRef: body.gitRef ?? "origin/main",
+        message: body.message ?? null,
+        mergeStaging: body.mergeStaging ?? true,
+      }),
+    }),
+  rollback: (body: ReleaseAgentRollbackRequest = { steps: 1 }) =>
+    api<OperationResult>("/api/release-agent/rollback", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };
 
 export const systemApi = {

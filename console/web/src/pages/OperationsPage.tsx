@@ -1,17 +1,34 @@
 import { useCallback, useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
-import { onboardingApi, operationsApi, settingsApi, toApiError, type OperationResult, type SettingsView } from "../api";
+import { Link, useSearchParams } from "react-router-dom";
+import {
+  onboardingApi,
+  operationsApi,
+  settingsApi,
+  dashboardApi,
+  toApiError,
+  type DashboardStatus,
+  type OperationResult,
+  type SettingsView,
+} from "../api";
 import { ActionButton } from "../components/ActionButton";
 import { Chip } from "../components/Chip";
+import { DeployLovelaceGatePanel } from "../components/dashboard/DeployLovelaceGatePanel";
 import { SectionAttentionBadge } from "../components/PageAttentionPanel";
 import { MirrorControlModeToggle } from "../components/MirrorControlModeToggle";
 import { MqttMirrorInstructions } from "../components/MqttMirrorInstructions";
 import { OpsLastResultPanel } from "../components/operations/OpsLastResultPanel";
+import { OpsCallout, OpsChecklist, OpsDetailsPanel, OpsNote, OpsTaskPanel } from "../components/operations/OpsTaskPanel";
 import { useNavAttentionContext } from "../context/NavAttentionContext";
 import { useAttentionNavigation } from "../hooks/useAttentionNavigation";
 import { operationsActionOrders, operationsSectionActionCount, type OpsSection } from "../lib/navAttention";
 
 const SECTIONS = [
+  {
+    id: "entity-deploy",
+    title: "Entity deploy gate",
+    risk: "medium" as const,
+    summary: "Scan prod entities, export migrations, and clear deploy blockers.",
+  },
   {
     id: "config-sync",
     title: "Config & sync",
@@ -48,18 +65,32 @@ function riskLabel(risk: "low" | "medium" | "high") {
 
 export default function OperationsPage() {
   const [searchParams] = useSearchParams();
-  const [sectionId, setSectionId] = useState<SectionId>("config-sync");
+  const [sectionId, setSectionId] = useState<SectionId>("entity-deploy");
   const [gitConfigured, setGitConfigured] = useState(true);
   const [settings, setSettings] = useState<SettingsView | null>(null);
+  const [mirrorStatus, setMirrorStatus] = useState<DashboardStatus["mirror"] | null>(null);
+  const [mirrorLoading, setMirrorLoading] = useState(true);
   const [lastResult, setLastResult] = useState<OperationResult | null>(null);
   const { itemsForPath, refresh: refreshAttention } = useNavAttentionContext();
   const attentionItems = itemsForPath("/operations");
   const sectionActionCount = (id: SectionId) => operationsSectionActionCount(attentionItems, id as OpsSection);
   const actionOrders = operationsActionOrders(attentionItems, sectionId as OpsSection);
 
+  const refreshMirrorStatus = useCallback(() => {
+    dashboardApi
+      .status()
+      .then((d) => setMirrorStatus(d.mirror ?? null))
+      .catch(() => undefined);
+  }, []);
+
   useEffect(() => {
     onboardingApi.status().then((s) => setGitConfigured(s.gitConfigured)).catch(() => setGitConfigured(false));
     settingsApi.get().then(setSettings).catch((e) => console.warn(toApiError(e).detail));
+    dashboardApi
+      .status()
+      .then((d) => setMirrorStatus(d.mirror ?? null))
+      .catch(() => setMirrorStatus(null))
+      .finally(() => setMirrorLoading(false));
   }, []);
 
   useEffect(() => {
@@ -83,8 +114,7 @@ export default function OperationsPage() {
     setLastResult(result);
   }, []);
 
-  const sectionIndex = SECTIONS.findIndex((s) => s.id === sectionId);
-  const current = SECTIONS[Math.max(sectionIndex, 0)] ?? SECTIONS[0];
+  const current = SECTIONS.find((s) => s.id === sectionId) ?? SECTIONS[0];
   const riskStatus = current.risk === "low" ? "pass" : "warn";
   const stagingHaType = settings?.topology.stagingHaType ?? "docker";
   const isDockerStaging = stagingHaType === "docker";
@@ -92,133 +122,327 @@ export default function OperationsPage() {
   const mirrorBroker = settings?.mirror.stagingMqttBrokerHost?.trim();
   const mirrorPort = settings?.mirror.stagingMqttPort ?? 1883;
   const showStorageRestart = Boolean(actionOrders["restart-staging"]);
+  const isEntityDeploy = current.id === "entity-deploy";
 
   return (
-    <div className="page ops-page">
-      <div className="page-header">
-        <div>
-          <h2>Operations</h2>
-          <p className="muted">{current.summary}</p>
-        </div>
-      </div>
-
-      <div className="layout">
-        <nav className="sidebar" aria-label="Operations">
-          {SECTIONS.map((s) => (
-            <button
-              key={s.id}
-              type="button"
-              className={`nav-item ${s.id === sectionId ? "active" : ""}`}
-              onClick={() => setSectionId(s.id)}
-            >
-              <span className="ops-nav-label">{s.title}</span>
-              <SectionAttentionBadge count={sectionActionCount(s.id)} />
-            </button>
-          ))}
-        </nav>
-
-        <main className="card main-card" id={`ops-${sectionId}`}>
-          <OpsLastResultPanel result={lastResult} />
-          <div className="ops-panel-head">
-            <h2>{current.title}</h2>
-            <Chip status={riskStatus} label={riskLabel(current.risk)} />
+    <div className={`page ops-page${isEntityDeploy ? " ops-page--entity-deploy" : ""}`}>
+      <header className="ops-page-hero">
+        <p className="ops-page-kicker">Operations</p>
+        <div className="ops-page-hero-row">
+          <div>
+            <h2 className="ops-page-title">{current.title}</h2>
+            <p className="ops-page-subtitle">{current.summary}</p>
           </div>
+          <Chip status={riskStatus} label={riskLabel(current.risk)} />
+        </div>
+      </header>
+
+      <nav className="ops-section-tabs" aria-label="Operations sections">
+        {SECTIONS.map((s) => (
+          <button
+            key={s.id}
+            type="button"
+            className={`ops-section-tab${s.id === sectionId ? " active" : ""}`}
+            onClick={() => setSectionId(s.id)}
+          >
+            <span className="ops-nav-label">{s.title}</span>
+            <SectionAttentionBadge count={sectionActionCount(s.id)} />
+          </button>
+        ))}
+      </nav>
+
+      {isEntityDeploy ? (
+        <div className="ops-entity-deploy-workspace" id="ops-entity-deploy">
+          <OpsCallout>
+            <p>
+              Compare git dashboard and config references against prod before you ship Lovelace or registry fixes.
+              Use <strong>Export migration</strong> to write <code>migrations/pending/*.yaml</code> and git patches — prod
+              stays read-only until the release agent runs.
+            </p>
+            <p className="muted">
+              The <strong>Naming</strong> tab lists advisory prod cleanup (suffix collisions, cast renames) — it does not
+              block deploy. Blocking issues are under Blocking / Awaiting.
+            </p>
+            <p className="muted">
+              Ship to prod (commit → push → deploy) is on{" "}
+              <Link to="/#deploy-flow-panel">Overview → Ship staging work to production</Link>.
+            </p>
+          </OpsCallout>
+          {!gitConfigured && (
+            <OpsCallout tone="warn">
+              HA config git repo is not configured or not mounted. Set the repo path in Settings → Paths &amp; git first.
+            </OpsCallout>
+          )}
+          {gitConfigured && (
+            <DeployLovelaceGatePanel
+              active
+              layout="workspace"
+              refreshKey={0}
+              onFixed={() => void refreshAttention()}
+            />
+          )}
+        </div>
+      ) : (
+        <div className="ops-section-stack" id={`ops-${sectionId}`}>
+          <OpsLastResultPanel result={lastResult} />
 
           {current.id === "config-sync" && (
             <>
-              <p>
+              <OpsCallout>
                 Keep staging YAML and runtime person states aligned with prod. These run inside the kit container
                 against your configured git repo and HA API tokens.
-              </p>
-              <h3>Apply staging config</h3>
-              <p className="muted">
-                Checks out your <strong>staging</strong> git branch and rsyncs config into the staging HA config
-                directory. Also refreshes <code>secrets.yaml</code> from prod (SSH) and the kit runtime overlay.
-                {isDockerStaging
-                  ? " Restart the staging Docker container afterward if YAML changed."
-                  : " Restart staging HA afterward if YAML changed (Settings → System → Restart on HA OS)."}
-              </p>
-              <h3>Person poll now</h3>
-              <p className="muted">
-                One immediate sync of person and device_tracker states from prod → staging via REST. Phones only report
-                to prod; this keeps staging presence realistic for automations.
-              </p>
+              </OpsCallout>
               {!gitConfigured && (
-                <p className="muted warn">
-                  HA config git repo is not configured or not mounted. Set the repo path in Settings → Paths &amp; git
-                  before applying config.
-                </p>
+                <OpsCallout tone="warn">
+                  HA config git repo is not configured. Set the repo path in Settings → Paths &amp; git before applying
+                  config.
+                </OpsCallout>
               )}
-              <div className="step-actions-right ops-actions">
-                <ActionButton
-                  label="Apply staging config"
-                  toastPreset="apply-config"
-                  onRun={operationsApi.applyConfig}
-                  disabled={!gitConfigured}
-                  attentionOrder={actionOrders["apply-config"]}
-                  onDone={afterOp}
-                  onFailure={onOpFailure}
-                />
-                <ActionButton
-                  label="Person poll now"
-                  toastPreset="person-poll"
-                  onRun={operationsApi.personPoll}
-                  variant="secondary"
-                  attentionOrder={actionOrders["person-poll"]}
-                  onDone={afterOp}
-                  onFailure={onOpFailure}
-                />
+              <div className="ops-task-grid">
+                <OpsTaskPanel
+                  title="Apply staging config"
+                  description={
+                    <>
+                      Checks out your <strong>staging</strong> git branch and rsyncs config into the staging HA config
+                      directory.
+                    </>
+                  }
+                  actions={
+                    <ActionButton
+                      label="Apply staging config"
+                      toastPreset="apply-config"
+                      onRun={operationsApi.applyConfig}
+                      disabled={!gitConfigured}
+                      attentionOrder={actionOrders["apply-config"]}
+                      onDone={afterOp}
+                      onFailure={onOpFailure}
+                    />
+                  }
+                >
+                  <OpsNote>
+                    Also refreshes <code>secrets.yaml</code> from prod (SSH) and the kit runtime overlay.
+                    {isDockerStaging
+                      ? " Restart the staging Docker container afterward if YAML changed."
+                      : " Restart staging HA afterward if YAML changed (Settings → System → Restart on HA OS)."}
+                  </OpsNote>
+                </OpsTaskPanel>
+                <OpsTaskPanel
+                  title="Person poll now"
+                  description="One immediate sync of person and device_tracker states from prod → staging via REST."
+                  actions={
+                    <ActionButton
+                      label="Person poll now"
+                      toastPreset="person-poll"
+                      onRun={operationsApi.personPoll}
+                      variant="secondary"
+                      attentionOrder={actionOrders["person-poll"]}
+                      onDone={afterOp}
+                      onFailure={onOpFailure}
+                    />
+                  }
+                >
+                  <OpsNote>
+                    Phones only report to prod; polling copies their presence into staging so automations behave
+                    realistically during testing.
+                  </OpsNote>
+                </OpsTaskPanel>
               </div>
+              <OpsDetailsPanel summary="Typical config workflow">
+                <OpsChecklist
+                  items={[
+                    "Edit YAML on staging branch in git (or on disk, then commit)",
+                    "Apply staging config — pulls secrets from prod and rsyncs packages",
+                    "Restart staging HA if YAML or packages changed",
+                    "Run person poll if you need fresh presence without waiting for the scheduled poller",
+                    "Use Storage sync (separate tab) when registries or Lovelace on disk diverge from prod",
+                  ]}
+                />
+              </OpsDetailsPanel>
             </>
           )}
 
           {current.id === "storage-sync" && (
             <>
-              <p>
+              <OpsCallout>
                 Pulls a curated subset of prod <code>.storage</code> into staging over SSH — entity registry, device
                 registry, MQTT credentials (for the mirror), person records, and related images.
-              </p>
-              <p className="muted">
-                <strong>Auth is not copied</strong> — staging keeps its own users and API tokens so the kit token survives
-                sync. See <code>docs/staging-prod-parity-rules.md</code> in the kit repo for the full sync matrix.
-              </p>
-              <p className="muted warn">
-                Overwrites matching files in staging <code>.storage</code>. Prod copies MQTT broker hostname{" "}
-                <code>core-mosquitto</code> into <code>core.config_entries</code> — that is correct on prod HA OS but
-                wrong on staging when using the mirror.
-              </p>
-              {mirrorEnabled && mirrorBroker ? (
-                <p className="muted">
-                  After sync, the kit re-applies the mirror broker at <code>{mirrorBroker}</code> so staging MQTT stays
-                  on the kit, not prod. Restart staging HA if entities stay unavailable.
-                </p>
-              ) : mirrorEnabled ? (
-                <p className="muted warn">
-                  Mirror is enabled but broker address could not be resolved — set prod and staging HA URLs in Settings.
-                </p>
-              ) : (
-                <p className="muted">MQTT broker patch runs only when the mirror is enabled.</p>
-              )}
-              <ul className="checklist">
-                <li>Needed when staging is missing devices/entities that exist on prod</li>
-                <li>Updates MQTT integration credentials used by the mirror broker</li>
-                <li>Does not modify prod — read-only from prod&apos;s perspective</li>
-                {isDockerStaging && (
-                  <li>
-                    Docker staging: no Apps page — MQTT is configured under Devices &amp; services, not the Add-on store
-                  </li>
+              </OpsCallout>
+              <OpsTaskPanel
+                title="Run storage sync"
+                variant="warn"
+                description={
+                  <>
+                    <strong>Auth is not copied</strong> — staging keeps its own users and API tokens so the kit token
+                    survives sync. See <code>docs/staging-prod-parity-rules.md</code> in the kit repo for the full sync
+                    matrix.
+                  </>
+                }
+                actions={
+                  <>
+                    <ActionButton
+                      label="Run storage sync"
+                      toastPreset="storage-sync"
+                      onRun={operationsApi.storageSync}
+                      attentionOrder={actionOrders["storage-sync"]}
+                      onDone={afterOp}
+                      onFailure={onOpFailure}
+                    />
+                    {showStorageRestart && (
+                      <ActionButton
+                        label="Restart staging HA"
+                        toastPreset="restart-staging"
+                        onRun={operationsApi.restartStaging}
+                        variant="secondary"
+                        attentionOrder={actionOrders["restart-staging"]}
+                        onDone={afterOp}
+                        onFailure={onOpFailure}
+                      />
+                    )}
+                  </>
+                }
+              >
+                <OpsCallout tone="warn">
+                  Overwrites matching files in staging <code>.storage</code>. Prod copies MQTT broker hostname{" "}
+                  <code>core-mosquitto</code> into <code>core.config_entries</code> — correct on prod HA OS but wrong on
+                  staging when using the mirror.
+                </OpsCallout>
+                {mirrorEnabled && mirrorBroker ? (
+                  <OpsCallout tone="info">
+                    After sync, the kit re-applies the mirror broker at <code>{mirrorBroker}</code> so staging MQTT stays
+                    on the kit, not prod. Restart staging HA if entities stay unavailable.
+                  </OpsCallout>
+                ) : mirrorEnabled ? (
+                  <OpsCallout tone="warn">
+                    Mirror is enabled but broker address could not be resolved — set prod and staging HA URLs in Settings.
+                  </OpsCallout>
+                ) : (
+                  <OpsNote>MQTT broker patch runs only when the mirror is enabled in Settings.</OpsNote>
                 )}
-              </ul>
-              <div className="step-actions-right ops-actions">
-                <ActionButton
-                  label="Run storage sync"
-                  toastPreset="storage-sync"
-                  onRun={operationsApi.storageSync}
-                  attentionOrder={actionOrders["storage-sync"]}
-                  onDone={afterOp}
-                  onFailure={onOpFailure}
+                <OpsChecklist
+                  items={[
+                    "Needed when staging is missing devices/entities that exist on prod",
+                    "Updates MQTT integration credentials used by the mirror broker",
+                    "Does not modify prod — read-only from prod's perspective",
+                    ...(isDockerStaging
+                      ? ["Docker staging: no Apps page — MQTT is under Devices & services, not the Add-on store"]
+                      : []),
+                  ]}
                 />
-                {showStorageRestart && (
+                <OpsDetailsPanel summary="What gets synced — full file list">
+                  <OpsNote>
+                    Copied from prod over SSH (rsync). <strong>Not copied:</strong> <code>auth</code>,{" "}
+                    <code>auth_provider.*</code>, <code>http.auth</code> (staging keeps kit LLATs),{" "}
+                    <code>restore_state</code>, <code>bluetooth</code>, <code>counter</code>, and{" "}
+                    <code>mobile_app</code> credentials. Person pictures sync via <code>image/</code>.
+                  </OpsNote>
+                  <p className="muted ops-details-lead">
+                    Includes registries, Lovelace on disk, helpers, MQTT integration entries, and related UI storage:
+                  </p>
+                  <ul className="ops-file-list">
+                    <li>
+                      <code>core.config_entries</code>, <code>core.entity_registry</code>,{" "}
+                      <code>core.device_registry</code>, area/floor/label/category registries
+                    </li>
+                    <li>
+                      <code>lovelace.*</code>, <code>lovelace_dashboards</code>, <code>lovelace_resources</code>,{" "}
+                      <code>frontend.user_data*</code>
+                    </li>
+                    <li>
+                      <code>person</code>, <code>zone</code>, <code>timer</code>, input helpers,{" "}
+                      <code>scheduler.storage</code>
+                    </li>
+                    <li>
+                      <code>onboarding</code>, <code>core.config</code>, <code>http</code>,{" "}
+                      <code>repairs.issue_registry</code>, and selected integration storage files
+                    </li>
+                  </ul>
+                  <OpsNote>
+                    After copy, <code>patch-staging-storage.sh</code> rewrites the MQTT broker when the mirror is
+                    enabled; <code>preserve-staging-oauth-entries.sh</code> restores staging OAuth for allowlisted
+                    cloud integrations. Full matrix: <code>docs/staging-prod-parity-rules.md</code>.
+                  </OpsNote>
+                </OpsDetailsPanel>
+              </OpsTaskPanel>
+            </>
+          )}
+
+          {current.id === "mqtt-mirror" && (
+            <>
+              <OpsCallout>
+                The kit runs a local Mosquitto broker that bridges selected topics from prod. Staging HA connects to
+                this broker (not prod directly) for live Zigbee and device state during testing.
+              </OpsCallout>
+
+              <OpsTaskPanel
+                title="Deploy bridge"
+                description="Regenerates bridge config from staging .storage and restarts mosquitto inside the kit container."
+                actions={
+                  <ActionButton
+                    label="Deploy / refresh mirror"
+                    toastPreset="refresh-mirror"
+                    onRun={operationsApi.deployMirror}
+                    attentionOrder={actionOrders["deploy-mirror"]}
+                    onDone={afterOp}
+                    onFailure={onOpFailure}
+                  />
+                }
+              >
+                <OpsNote>
+                  Run after <strong>Storage sync</strong> or when prod MQTT credentials change. Staging must already
+                  have MQTT integration entries in <code>.storage</code> — storage sync copies those from prod.
+                </OpsNote>
+              </OpsTaskPanel>
+
+              <OpsTaskPanel
+                title="Control mode"
+                variant={mirrorStatus?.mode === "control" ? "danger" : "default"}
+                description={
+                  <>
+                    <strong>Read-only</strong> (default) — prod → staging only; safe for everyday staging work.{" "}
+                    <strong>Control mode</strong> — also forwards <code>zigbee2mqtt/+/set</code> to prod; real devices
+                    can actuate. Turn off when finished testing.
+                  </>
+                }
+                aside={
+                  <MirrorControlModeToggle
+                    layout="row"
+                    mirror={mirrorStatus}
+                    statusLoading={mirrorLoading}
+                    onChanged={refreshMirrorStatus}
+                  />
+                }
+              />
+
+              {mirrorEnabled ? (
+                <OpsDetailsPanel summary="Point staging HA at the mirror — step-by-step" defaultOpen>
+                  <MqttMirrorInstructions
+                    stagingHaType={stagingHaType}
+                    brokerHost={mirrorBroker ?? undefined}
+                    brokerPort={mirrorPort}
+                  />
+                </OpsDetailsPanel>
+              ) : (
+                <OpsNote>
+                  Enable the mirror in Settings → MQTT mirror before pointing staging HA at the kit broker.
+                </OpsNote>
+              )}
+            </>
+          )}
+
+          {current.id === "staging-ha" && (
+            <>
+              <OpsCallout>
+                Restarts staging Home Assistant so configuration and integrations reload after apply, storage sync, or
+                manual file edits. Does not restart prod or the kit container.
+              </OpsCallout>
+              <OpsTaskPanel
+                title="Restart staging Home Assistant"
+                description={
+                  isDockerStaging
+                    ? "Restarts the Docker container running staging Home Assistant."
+                    : "Restarts the staging Home Assistant container when STAGING_HA_CONTAINER is set."
+                }
+                actions={
                   <ActionButton
                     label="Restart staging HA"
                     toastPreset="restart-staging"
@@ -226,101 +450,37 @@ export default function OperationsPage() {
                     variant="secondary"
                     attentionOrder={actionOrders["restart-staging"]}
                     onDone={afterOp}
-                  onFailure={onOpFailure}
+                    onFailure={onOpFailure}
                   />
-                )}
-              </div>
-            </>
-          )}
-
-          {current.id === "mqtt-mirror" && (
-            <>
-              <p>
-                The kit runs a local Mosquitto broker that bridges selected topics from prod. Staging HA connects to
-                this broker (not prod directly) for live Zigbee/device state during testing.
-              </p>
-              <h3>Deploy / refresh mirror</h3>
-              <p className="muted">
-                Regenerates bridge config from staging <code>.storage</code> and restarts mosquitto inside the kit
-                container. Run after storage sync or when prod MQTT credentials change.
-              </p>
-              <h3>Mirror mode</h3>
-              <p className="muted">
-                <strong>Read-only</strong> (default) — prod → staging only; safe for everyday staging work.{" "}
-                <strong>Control mode</strong> — also forwards <code>zigbee2mqtt/+/set</code> to prod; real devices can
-                actuate. Turn off when finished testing.
-              </p>
-              <MirrorControlModeToggle />
-              {mirrorEnabled && (
-                <>
-                  <h3>Point staging HA at the mirror</h3>
-                  <MqttMirrorInstructions
-                    stagingHaType={stagingHaType}
-                    brokerHost={mirrorBroker ?? undefined}
-                    brokerPort={mirrorPort}
-                  />
-                </>
-              )}
-              <div className="step-actions-right ops-actions">
-                <ActionButton
-                  label="Deploy / refresh mirror"
-                  toastPreset="refresh-mirror"
-                  onRun={operationsApi.deployMirror}
-                  attentionOrder={actionOrders["deploy-mirror"]}
-                  onDone={afterOp}
-                  onFailure={onOpFailure}
+                }
+              >
+                <OpsNote>
+                  {isDockerStaging ? (
+                    <>
+                      Set <code>STAGING_HA_CONTAINER</code> in Settings → Advanced (e.g.{" "}
+                      <code>Home-Assistant-Container</code>). The kit uses the host Docker socket to restart that
+                      container.
+                    </>
+                  ) : (
+                    <>
+                      On HA OS staging you can also restart from <strong>Settings → System → Restart</strong> in the HA
+                      UI. The kit button only works when a Docker container name is configured.
+                    </>
+                  )}
+                </OpsNote>
+                <OpsChecklist
+                  items={[
+                    "Use after Apply staging config when YAML packages changed",
+                    "Use after Storage sync if MQTT entities stay unavailable",
+                    "Expect staging to be unavailable for 30–90 seconds during restart",
+                    "Does not restart prod or the kit container itself",
+                  ]}
                 />
-              </div>
+              </OpsTaskPanel>
             </>
           )}
-
-          {current.id === "staging-ha" && (
-            <>
-              {isDockerStaging ? (
-                <>
-                  <p>
-                    Restarts the Docker container running staging Home Assistant so it reloads configuration and
-                    integrations after an apply, storage sync, or manual file edits.
-                  </p>
-                  <p className="muted">
-                    Set <code>STAGING_HA_CONTAINER</code> in Settings → Advanced (e.g.{" "}
-                    <code>Home-Assistant-Container</code>). The kit uses the host Docker socket to restart that
-                    container.
-                  </p>
-                </>
-              ) : (
-                <>
-                  <p>
-                    Restarts the staging Home Assistant container (when <code>STAGING_HA_CONTAINER</code> is set) so
-                    integrations reload after storage sync or config changes.
-                  </p>
-                  <p className="muted">
-                    On HA OS staging you can also restart from <strong>Settings → System → Restart</strong> in the HA
-                    UI. The kit button only works when a Docker container name is configured.
-                  </p>
-                </>
-              )}
-              <ul className="checklist">
-                <li>Use after <strong>Apply staging config</strong> when YAML packages changed</li>
-                <li>Use after <strong>Storage sync</strong> if MQTT entities stay unavailable</li>
-                <li>Expect staging to be unavailable for 30–90 seconds during restart</li>
-                <li>Does not restart prod or the kit container itself</li>
-              </ul>
-              <div className="step-actions-right ops-actions">
-                <ActionButton
-                  label="Restart staging HA"
-                  toastPreset="restart-staging"
-                  onRun={operationsApi.restartStaging}
-                  variant="secondary"
-                  attentionOrder={actionOrders["restart-staging"]}
-                  onDone={afterOp}
-                  onFailure={onOpFailure}
-                />
-              </div>
-            </>
-          )}
-        </main>
-      </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -76,6 +76,8 @@ public sealed record OnboardingState
     public bool HaMqttConfirmed { get; set; }
     public List<HealthCheckResult>? LastHealthChecks { get; set; }
     public AppearanceSettings Appearance { get; set; } = new();
+    /// <summary>When false (default), kit SSH deploy/fix/rollback on prod is blocked.</summary>
+    public bool ProdWritesEnabled { get; set; }
 }
 
 public sealed record TopologyRequest(string ProdHaType, string StagingHaType, bool SameHostAsKit);

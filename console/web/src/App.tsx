@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { onboardingApi, toApiError, type ApiError } from "./api";
 import { AppShell } from "./components/AppShell";
 import { LoadErrorPanel } from "./components/LoadErrorPanel";
+import ActivityPage from "./pages/ActivityPage";
 import DashboardEnvironmentPage from "./pages/DashboardEnvironmentPage";
 import DashboardLivePage from "./pages/DashboardLivePage";
 import DiagnosticsPage from "./pages/DiagnosticsPage";
@@ -77,6 +78,7 @@ export default function App() {
         <Route element={<AppShell />}>
           <Route index element={<DashboardLivePage />} />
           <Route path="environment" element={<DashboardEnvironmentPage />} />
+          <Route path="activity" element={<ActivityPage />} />
           <Route path="diagnostics" element={<DiagnosticsPage />} />
           <Route path="operations" element={<OperationsPage />} />
           <Route path="settings" element={<SettingsPage />} />

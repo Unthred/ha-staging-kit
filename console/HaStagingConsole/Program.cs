@@ -1,5 +1,7 @@
 using HaStagingConsole.Models;
 using HaStagingConsole.Services;
+using HaStagingConsole.Services.Release;
+using HaStagingConsole.Hubs;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Host.ConfigureHostOptions(o => o.ShutdownTimeout = TimeSpan.FromSeconds(12));
@@ -27,9 +29,16 @@ builder.Services.AddSingleton<ProdZigbee2MqttReader>();
 builder.Services.AddSingleton<Zigbee2MqttConfigFixService>();
 builder.Services.AddSingleton<ProdDeletedRegistryPurgeService>();
 builder.Services.AddSingleton<ProdEntitySuffixFixService>();
+builder.Services.AddSingleton<ProdWritesGuard>();
 builder.Services.AddSingleton<LovelaceParityUndoStore>();
 builder.Services.AddSingleton<LovelaceParityFixActionStore>();
 builder.Services.AddSingleton<ProdStorageDeployService>();
+builder.Services.AddSingleton<MigrationExportService>();
+builder.Services.AddSingleton<ReleaseHistoryStore>();
+builder.Services.AddSingleton<MigrationManifestLoader>();
+builder.Services.AddSingleton<MigrationRunner>();
+builder.Services.AddSingleton<ProdRegistrySnapshotService>();
+builder.Services.AddSingleton<ReleaseAgentService>();
 builder.Services.AddSingleton<LovelaceParityFixService>();
 builder.Services.AddSingleton<WorkbenchResetService>();
 builder.Services.AddSingleton<StagingTargetBuilder>();
@@ -42,6 +51,9 @@ builder.Services.AddSingleton<PathBrowserService>();
 builder.Services.AddSingleton<SetupDetector>();
 builder.Services.AddSingleton<MirrorEndpointResolver>();
 builder.Services.AddSingleton<OperationLogService>();
+builder.Services.AddSingleton<ActivityStreamService>();
+builder.Services.AddSingleton<ActivitySuggestionsService>();
+builder.Services.AddSignalR();
 builder.Services.AddHttpClient();
 
 var app = builder.Build();
@@ -158,6 +170,8 @@ app.MapPost("/api/settings", (SettingsUpdateRequest req, SettingsService setting
     Results.Ok(settings.Save(req)));
 app.MapPost("/api/settings/appearance", (AppearanceSettings req, SettingsService settings) =>
     Results.Ok(settings.SaveAppearance(req)));
+app.MapPost("/api/settings/release-safety", (ReleaseSafetySettingsRequest req, SettingsService settings) =>
+    Results.Ok(settings.SaveReleaseSafety(req.ProdWritesEnabled)));
 
 app.MapPost("/api/operations/apply-config", async (OperationsService ops, OperationLogService opLog, CancellationToken ct) =>
 { var r = await ops.ApplyConfigAsync(ct); opLog.Record("Apply config", r); return Results.Ok(r); });
@@ -198,6 +212,45 @@ app.MapPost("/api/operations/lovelace-parity-fix", async (
     opLog.Record($"Lovelace parity fix ({req.Action} {req.EntityId})", new OperationResult(r.Ok, r.Message, null));
     return Results.Ok(r);
 });
+app.MapPost("/api/operations/export-migration", async (
+    ExportMigrationRequest req,
+    OperationsService ops,
+    OperationLogService opLog,
+    CancellationToken ct) =>
+{
+    var r = await ops.ExportMigrationAsync(req, ct);
+    opLog.Record($"Export migration ({req.Source})", new OperationResult(r.Ok, r.Message, null));
+    return Results.Ok(r);
+});
+
+app.MapGet("/api/release-agent/plan", async (string? gitRef, ReleaseAgentService agent, CancellationToken ct) =>
+    Results.Ok(await agent.PlanAsync(gitRef ?? "origin/main", ct)));
+
+app.MapGet("/api/release-agent/history", async (ReleaseAgentService agent, CancellationToken ct) =>
+    Results.Ok(await agent.HistoryAsync(ct)));
+
+app.MapPost("/api/release-agent/apply", async (
+    ReleaseAgentApplyRequest req,
+    ReleaseAgentService agent,
+    OperationLogService opLog,
+    CancellationToken ct) =>
+{
+    var r = await agent.ApplyAsync(req, ct);
+    opLog.Record($"Release apply ({req.GitRef})", r);
+    return Results.Ok(r);
+});
+
+app.MapPost("/api/release-agent/rollback", async (
+    ReleaseAgentRollbackRequest req,
+    ReleaseAgentService agent,
+    OperationLogService opLog,
+    CancellationToken ct) =>
+{
+    var r = await agent.RollbackAsync(req, ct);
+    opLog.Record("Release rollback", r);
+    return Results.Ok(r);
+});
+
 app.MapPost("/api/operations/purge-prod-deleted-entities", async (
     PurgeProdDeletedEntitiesRequest req,
     OperationsService ops,
@@ -224,7 +277,7 @@ app.MapPost("/api/operations/fix-prod-entity-id", async (
     OperationLogService opLog,
     CancellationToken ct) =>
 {
-    var r = await ops.FixProdEntityIdAsync(req.ExpectedEntityId, req.WrongProdEntityId, ct);
+    var r = await ops.FixProdEntityIdAsync(req.ExpectedEntityId, req.WrongProdEntityId, req.RelaxedUniqueId, ct);
     opLog.Record($"Fix prod entity id ({req.WrongProdEntityId} → {req.ExpectedEntityId})", r);
     return Results.Ok(r);
 });
@@ -547,5 +600,9 @@ app.MapGet("/api/onboarding/report", (OnboardingBootstrap bootstrap, OnboardingS
     return Results.Ok(new OnboardingReport(summary, next, status.LastHealthChecks ?? []));
 });
 
+app.MapHub<ActivityHub>("/hubs/activity");
+app.MapGet("/api/activity/snapshot", (ActivityStreamService activity) => Results.Ok(activity.GetSnapshot()));
+app.MapGet("/api/activity/suggestions", async (ActivitySuggestionsService suggestions, CancellationToken ct) =>
+    Results.Ok(await suggestions.GetSuggestionsAsync(ct)));
 app.MapFallbackToFile("index.html");
 app.Run("http://0.0.0.0:8080");

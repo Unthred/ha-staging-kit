@@ -52,7 +52,12 @@ const OVERVIEW_SLOT_ORDER: OverviewAttentionSlot[] = [
   "deploy-prod",
 ];
 
-export type OpsSection = "config-sync" | "storage-sync" | "mqtt-mirror" | "staging-ha";
+export type OpsSection =
+  | "entity-deploy"
+  | "config-sync"
+  | "storage-sync"
+  | "mqtt-mirror"
+  | "staging-ha";
 
 export type OpsAttentionAction =
   | "apply-config"
@@ -63,6 +68,7 @@ export type OpsAttentionAction =
 
 
 const OPS_ACTION_ORDER: Record<OpsSection, OpsAttentionAction[]> = {
+  "entity-deploy": [],
   "config-sync": ["apply-config", "person-poll"],
   "storage-sync": ["storage-sync", "restart-staging"],
   "mqtt-mirror": ["deploy-mirror"],
@@ -230,10 +236,11 @@ function buildDeployItems(
       push(items, {
         id: "deploy-entity-gate",
         path: "/",
-        label: `${preflight!.deployIssueCount} entity deploy blocker(s) — fix in ship wizard below`,
+        label: `${preflight!.deployIssueCount} entity deploy blocker(s) — fix in Operations → Entity deploy gate`,
         severity: "error",
-        anchor: "deploy-lovelace-gate",
+        anchor: "ops-entity-deploy",
         overviewSlot: "deploy-gate",
+        opsSection: "entity-deploy",
       });
     }
     for (const z of preflight?.z2mConfigIssues ?? []) {
@@ -243,18 +250,20 @@ function buildDeployItems(
         path: "/",
         label: z.summary || "Zigbee2MQTT config issue blocks prod deploy",
         severity: "error",
-        anchor: "deploy-lovelace-gate",
+        anchor: "ops-entity-deploy",
         overviewSlot: "deploy-gate",
+        opsSection: "entity-deploy",
       });
     }
     if (!preflight || ((preflight.deployIssueCount ?? 0) === 0 && !preflight.pendingCommit)) {
       push(items, {
         id: "deploy-gate-scan",
         path: "/",
-        label: "Entity deploy scan required before prod deploy — review ship wizard below",
+        label: "Entity deploy scan required before release — open Operations → Entity deploy gate",
         severity: "warn",
-        anchor: "deploy-lovelace-gate",
+        anchor: "ops-entity-deploy",
         overviewSlot: "deploy-gate",
+        opsSection: "entity-deploy",
       });
     }
   } else if (deploy.pending && !deploy.canDeploy && !blockMsg) {
@@ -374,8 +383,40 @@ function buildEnvironmentItems(dashboard: DashboardStatus): NavAttentionItem[] {
   return items;
 }
 
-function buildOperationsItems(dashboard: DashboardStatus): NavAttentionItem[] {
+function buildOperationsItems(
+  dashboard: DashboardStatus,
+  preflight: ProdStoragePreflightResult | null,
+): NavAttentionItem[] {
   const items: NavAttentionItem[] = [];
+  const git = dashboard.git;
+  const deploy = getDeployProdState(git, dashboard.configDrift);
+  const lovelacePending = prodLovelaceBundlePending(git);
+  const z2mPending = (git?.mainHaFileList ?? []).some((path) =>
+    path.replace(/\\/g, "/").toLowerCase().startsWith("zigbee2mqtt/"),
+  );
+  const gateRelevant = (lovelacePending || z2mPending) && deploy.pending;
+
+  if (gateRelevant) {
+    if ((preflight?.deployIssueCount ?? 0) > 0) {
+      push(items, {
+        id: "ops-entity-gate-blockers",
+        path: "/operations",
+        label: `${preflight!.deployIssueCount} entity deploy blocker(s)`,
+        severity: "error",
+        anchor: "ops-entity-deploy",
+        opsSection: "entity-deploy",
+      });
+    } else if (!preflight || preflight.deployIssueCount === 0) {
+      push(items, {
+        id: "ops-entity-gate-scan",
+        path: "/operations",
+        label: "Entity deploy scan required before release",
+        severity: "warn",
+        anchor: "ops-entity-deploy",
+        opsSection: "entity-deploy",
+      });
+    }
+  }
 
   const lastPoll = dashboard.pollHistory?.[dashboard.pollHistory.length - 1];
   if (lastPoll && !lastPoll.ok) {
@@ -530,7 +571,7 @@ export function computeNavAttention(input: {
     ...buildLogSignalItems(dashboard.issues),
     ...buildHaDiagnosticsItems(dashboard.haIssues ?? []),
     ...buildEnvironmentItems(dashboard),
-    ...buildOperationsItems(dashboard),
+    ...buildOperationsItems(dashboard, preflight),
     ...buildSettingsItems(onboarding),
     ...buildOnboardingItems(onboarding),
   ];

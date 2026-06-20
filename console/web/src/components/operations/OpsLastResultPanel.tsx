@@ -10,7 +10,7 @@ export function OpsLastResultPanel({ result }: { result: OperationResult | null 
   const tone = result.ok ? "pass" : "fail";
 
   return (
-    <section className={`card ops-last-result ops-last-result--${tone}`} aria-live="polite">
+    <section className={`ops-last-result ops-last-result--${tone}`} aria-live="polite">
       <header className="ops-last-result-head">
         <Chip status={tone} label={result.ok ? "Succeeded" : "Failed"} />
         <p className="ops-last-result-msg">{result.message || (result.ok ? "Operation completed" : "Operation failed")}</p>

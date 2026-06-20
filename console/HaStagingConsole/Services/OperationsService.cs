@@ -15,6 +15,8 @@ public sealed class OperationsService(
     WorkbenchResetService workbenchReset,
     ProdDeletedRegistryPurgeService deletedRegistryPurge,
     ProdEntitySuffixFixService entitySuffixFix,
+    MigrationExportService migrationExport,
+    ProdWritesGuard prodWrites,
     GitSshConfigurator gitSsh,
     IHttpClientFactory httpClientFactory)
 {
@@ -134,7 +136,14 @@ public sealed class OperationsService(
         ".storage/scheduler.storage",
     ];
 
-    public async Task<OperationResult> RollbackProdDeployAsync(CancellationToken ct)
+    public Task<OperationResult> RollbackProdDeployAsync(CancellationToken ct)
+    {
+        if (prodWrites.BlockIfLocked("Rollback prod deploy") is { } blocked)
+            return Task.FromResult(blocked);
+        return RollbackProdDeployInternalAsync(ct);
+    }
+
+    async Task<OperationResult> RollbackProdDeployInternalAsync(CancellationToken ct)
     {
         var previous = ReadPreviousDeployedSha();
         if (string.IsNullOrWhiteSpace(previous))
@@ -173,31 +182,51 @@ public sealed class OperationsService(
             JoinLogs(logs, restart.LogTail));
     }
 
-    public Task<OperationResult> DeployToProdAsync(CancellationToken ct) =>
-        DeployToProdInternalAsync(ct);
+    public Task<OperationResult> DeployToProdAsync(CancellationToken ct)
+    {
+        if (prodWrites.BlockIfLocked("Deploy to prod") is { } blocked)
+            return Task.FromResult(blocked);
+        return DeployToProdInternalAsync(ct);
+    }
 
     public Task<LovelaceParityFixResult> ApplyLovelaceParityFixAsync(
         LovelaceParityFixRequest request,
         CancellationToken ct) =>
         parityFix.ApplyFixAsync(request, ct);
 
+    public Task<ExportMigrationResult> ExportMigrationAsync(ExportMigrationRequest request, CancellationToken ct) =>
+        migrationExport.ExportAsync(request, ct);
+
     public Task<OperationResult> PurgeProdDeletedEntitiesAsync(
         string entityId,
         string? similarProdEntityId,
-        CancellationToken ct) =>
-        deletedRegistryPurge.PurgeDeletedEntitiesAsync(entityId, similarProdEntityId, ct);
+        CancellationToken ct)
+    {
+        if (prodWrites.BlockIfLocked("Purge prod registry tombstones") is { } blocked)
+            return Task.FromResult(blocked);
+        return deletedRegistryPurge.PurgeDeletedEntitiesAsync(entityId, similarProdEntityId, ct);
+    }
 
     public Task<OperationResult> FixProdEntitySuffixAsync(
         string expectedEntityId,
         string suffixProdEntityId,
-        CancellationToken ct) =>
-        entitySuffixFix.FixSuffixCollisionAsync(expectedEntityId, suffixProdEntityId, ct);
+        CancellationToken ct)
+    {
+        if (prodWrites.BlockIfLocked("Fix prod entity suffix") is { } blocked)
+            return Task.FromResult(blocked);
+        return entitySuffixFix.FixSuffixCollisionAsync(expectedEntityId, suffixProdEntityId, ct);
+    }
 
     public Task<OperationResult> FixProdEntityIdAsync(
         string expectedEntityId,
         string wrongProdEntityId,
-        CancellationToken ct) =>
-        entitySuffixFix.FixWrongEntityIdAsync(expectedEntityId, wrongProdEntityId, ct);
+        bool relaxedUniqueId,
+        CancellationToken ct)
+    {
+        if (prodWrites.BlockIfLocked("Fix prod entity id") is { } blocked)
+            return Task.FromResult(blocked);
+        return entitySuffixFix.FixWrongEntityIdAsync(expectedEntityId, wrongProdEntityId, ct, relaxedUniqueId);
+    }
 
     public Task<LovelaceParityFixResult> ApplyZ2mConfigFixAsync(
         Z2mConfigFixRequest request,
@@ -232,12 +261,13 @@ public sealed class OperationsService(
 
     async Task<ProdStoragePreflightResult> RunPreflightProdStorageDeployCoreAsync(CancellationToken ct)
     {
-        using var _ = PreflightProgressStore.BeginScan(PreflightProgressStore.LovelacePanelStepCount);
+        using var scan = PreflightProgressStore.BeginScan(3);
         const string deployRef = "origin/main";
         PreflightProgressStore.Advance("Fetching latest from GitHub");
         var (fetchOk, _, fetchErr) = await RunGitBashAsync("git -C /repo fetch origin main 2>/dev/null", ct);
         if (!fetchOk)
         {
+            PreflightProgressStore.Complete("Scan failed");
             return WithUndoStatus(ProdStorageDeployService.EmptyPreflight(
                 0,
                 [$"git fetch failed: {fetchErr}"]));
@@ -258,21 +288,31 @@ public sealed class OperationsService(
         ProdStoragePreflightResult result;
         if (!lovelacePending && !z2mPending)
         {
+            PreflightProgressStore.SetTotalSteps(4);
             var z2mOnly = await storageDeploy.PreflightZ2mConfigAsync(deployRef, ct);
             result = z2mOnly.Z2mConfigIssues.Any(i => i.BlocksDeploy)
                 ? WithUndoStatus(z2mOnly)
                 : WithUndoStatus(ProdStorageDeployService.EmptyPreflight(
                     0,
                     ["No Lovelace bundle or zigbee2mqtt changes pending on GitHub main"]));
+            PreflightProgressStore.Complete();
+            return result;
         }
-        else if (lovelacePending)
+
+        if (lovelacePending)
         {
+            PreflightProgressStore.SetTotalSteps(19);
             result = WithUndoStatus(await storageDeploy.PreflightLovelaceBundleForPanelAsync(deployRef, ct));
         }
         else
         {
+            PreflightProgressStore.SetTotalSteps(5);
             result = WithUndoStatus(await storageDeploy.PreflightZ2mConfigAsync(deployRef, ct));
         }
+
+        PreflightProgressStore.Advance("Checking prod entity naming");
+        var namingIssues = await storageDeploy.ScanProdNamingIssuesAsync(ct);
+        result = ProdStorageDeployService.AttachProdNamingIssues(result, namingIssues);
 
         result = WithUndoStatus(result);
         result = result with
@@ -873,6 +913,184 @@ public sealed class OperationsService(
         var stderrTask = proc.StandardError.ReadToEndAsync(ct);
         await proc.WaitForExitAsync(ct);
         return (proc.ExitCode == 0, (await stdoutTask).Trim(), (await stderrTask).Trim());
+    }
+
+    /// <summary>Release agent: deploy git ref to prod without staging→main merge.</summary>
+    public async Task<(OperationResult Result, bool YamlDeployed, IReadOnlyList<string> StoragePaths)> DeployProdConfigAtRefAsync(
+        string gitRef,
+        string? baselineSha,
+        CancellationToken ct)
+    {
+        var logs = new List<string>();
+        var haChanged = await HaConfigChangedSinceAsync(baselineSha, gitRef, ct);
+        var changedStoragePaths = await storageDeploy.GetChangedStoragePathsAsync(baselineSha, gitRef, ct);
+        var storageDeployPaths = storageDeploy.ResolveDeployPaths(changedStoragePaths);
+        var lovelaceChanged = changedStoragePaths.Any(ProdStorageDeployService.IsLovelacePath);
+
+        if (!haChanged && storageDeployPaths.Count == 0)
+        {
+            return (new OperationResult(
+                true,
+                $"No HA or dashboard changes between baseline and {gitRef[..Math.Min(7, gitRef.Length)]}",
+                null), false, []);
+        }
+
+        if (lovelaceChanged || await Zigbee2MqttChangedSinceAsync(baselineSha, gitRef, ct))
+        {
+            var gate = lovelaceChanged
+                ? await storageDeploy.PreflightLovelaceBundleAsync(gitRef, ct)
+                : await storageDeploy.PreflightZ2mConfigAsync(gitRef, ct);
+            if (!gate.Ok)
+            {
+                var detail = BuildLovelaceGateFailure(gate);
+                logs.Add(detail);
+                return (new OperationResult(false, "Release blocked — entity deploy scan failed", JoinLogs(logs, detail)), false, []);
+            }
+        }
+
+        if (haChanged)
+        {
+            var pull = await SshGitDeployRefAsync(gitRef, ct);
+            logs.Add(pull.Message);
+            if (!pull.Ok)
+                return (new OperationResult(false, pull.Message, pull.LogTail), false, []);
+        }
+
+        if (storageDeployPaths.Count > 0)
+        {
+            var storageResult = await storageDeploy.DeployStorageFilesFromRefAsync(gitRef, storageDeployPaths, ct);
+            logs.Add(storageResult.Message);
+            if (!storageResult.Ok)
+                return (new OperationResult(false, storageResult.Message, storageResult.LogTail), haChanged, storageDeployPaths);
+
+            var restart = await RestartProdHaAsync(ct);
+            logs.Add(restart.Message);
+            if (!restart.Ok)
+                return (new OperationResult(false, restart.Message, restart.LogTail), haChanged, storageDeployPaths);
+
+            return (new OperationResult(
+                true,
+                haChanged
+                    ? "Prod config deployed — YAML plus dashboard/helper .storage bundle"
+                    : "Prod config deployed — dashboard/helper .storage bundle",
+                JoinLogs(logs, restart.LogTail)), haChanged, storageDeployPaths);
+        }
+
+        var reload = await ReloadProdHaAsync(ct);
+        logs.Add(reload.Message);
+        if (!reload.Ok)
+            return (new OperationResult(false, reload.Message, reload.LogTail), haChanged, []);
+
+        return (new OperationResult(
+            true,
+            "Prod config deployed — YAML reloaded",
+            JoinLogs(logs, reload.LogTail)), haChanged, []);
+    }
+
+    public async Task<OperationResult> RollbackProdConfigToRefAsync(string gitRef, CancellationToken ct)
+    {
+        var logs = new List<string> { $"Rolling back prod config to {gitRef[..Math.Min(7, gitRef.Length)]}" };
+        var deploy = await SshGitDeployRefAsync(gitRef, ct);
+        logs.Add(deploy.Message);
+        if (!deploy.Ok)
+            return Fail(logs, deploy.LogTail);
+
+        var restore = await RestoreProdStorageFilesFromRefAsync(gitRef, ct);
+        logs.Add(restore.Message);
+        if (!restore.Ok)
+            return Fail(logs, restore.LogTail);
+
+        var restart = await RestartProdHaAsync(ct);
+        logs.Add(restart.Message);
+        if (!restart.Ok)
+            return Fail(logs, restart.LogTail);
+
+        return new OperationResult(
+            true,
+            $"Prod config rolled back to {gitRef[..Math.Min(7, gitRef.Length)]}",
+            JoinLogs(logs, restart.LogTail));
+    }
+
+    public Task<OperationResult> StopProdCoreAsync(CancellationToken ct) => StopProdHaCoreAsync(ct);
+
+    public Task<OperationResult> StartProdCoreAsync(CancellationToken ct) => StartProdHaCoreAsync(ct);
+
+    async Task<OperationResult> StopProdHaCoreAsync(CancellationToken ct)
+    {
+        var (prodUrl, prodToken) = TokenFile.Read(paths.ProdTokenFile);
+        if (string.IsNullOrWhiteSpace(prodUrl) || string.IsNullOrWhiteSpace(prodToken))
+            return new OperationResult(false, "Prod HA token not configured", null);
+
+        try
+        {
+            using var http = httpClientFactory.CreateClient();
+            http.Timeout = TimeSpan.FromSeconds(120);
+            using var req = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"{prodUrl.TrimEnd('/')}/api/services/homeassistant/stop");
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", prodToken);
+            req.Content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
+            using var resp = await http.SendAsync(req, ct);
+            if (resp.IsSuccessStatusCode || (int)resp.StatusCode == 504)
+                return new OperationResult(true, "Prod HA stop requested", null);
+            return new OperationResult(false, $"Prod HA stop returned HTTP {(int)resp.StatusCode}", null);
+        }
+        catch (Exception ex) when (ex is TaskCanceledException or HttpRequestException)
+        {
+            return new OperationResult(true, "Prod HA stop requested (connection dropped)", null);
+        }
+        catch (Exception ex)
+        {
+            return new OperationResult(false, $"Prod HA stop failed: {ex.Message}", null);
+        }
+    }
+
+    async Task<OperationResult> StartProdHaCoreAsync(CancellationToken ct)
+    {
+        var target = ParseProdTarget();
+        if (target is null)
+            return new OperationResult(false, "Prod SSH not configured", null);
+
+        var (userHost, configPath) = target.Value;
+        var sshBase = SshBase();
+        var (startOk, startOut, startErr) = await RunBashAsync(
+            $"ssh {sshBase} {ShQ(userHost)} {ShQ("sudo bash -lc \"ha core start\"")}",
+            ct);
+        if (!startOk)
+            return new OperationResult(false, "Prod HA start failed — start core manually", startErr);
+
+        return new OperationResult(true, "Prod HA core started", startOut);
+    }
+
+    async Task<OperationResult> WaitForProdCoreDownAsync(CancellationToken ct)
+    {
+        var (prodUrl, prodToken) = TokenFile.Read(paths.ProdTokenFile);
+        if (string.IsNullOrWhiteSpace(prodUrl))
+            return new OperationResult(false, "Prod HA URL not configured", null);
+
+        for (var attempt = 0; attempt < 30; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                using var http = httpClientFactory.CreateClient();
+                http.Timeout = TimeSpan.FromSeconds(3);
+                using var req = new HttpRequestMessage(HttpMethod.Get, $"{prodUrl.TrimEnd('/')}/api/");
+                if (!string.IsNullOrWhiteSpace(prodToken))
+                    req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", prodToken);
+                using var resp = await http.SendAsync(req, ct);
+                if (!resp.IsSuccessStatusCode)
+                    return new OperationResult(true, "Prod HA API is down", null);
+            }
+            catch (Exception) when (attempt < 29)
+            {
+                return new OperationResult(true, "Prod HA API is down", null);
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(2), ct);
+        }
+
+        return new OperationResult(false, "Timed out waiting for prod HA to stop", null);
     }
 
     static OperationResult Fail(IReadOnlyList<string> logs, string? tail) =>

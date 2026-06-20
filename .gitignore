@@ -18,3 +18,7 @@ console/web/node_modules/
 console/web/dist/
 .deploy-cache/
 console/web/tsconfig.tsbuildinfo
+
+# Script tooling
+scripts/node_modules/
+node_modules/

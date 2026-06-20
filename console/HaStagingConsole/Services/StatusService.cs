@@ -12,7 +12,8 @@ public sealed partial class StatusService(
     DashboardBuilder dashboard,
     StagingTargetBuilder stagingTarget,
     LiveMetricsStore liveMetrics,
-    HaInstanceDiagnostics haDiagnostics)
+    HaInstanceDiagnostics haDiagnostics,
+    ProdWritesGuard prodWrites)
 {
     public async Task<DashboardStatus> GetDashboardAsync(CancellationToken ct)
     {
@@ -175,7 +176,8 @@ public sealed partial class StatusService(
             issues,
             haIssues,
             liveMetricsSnapshot,
-            DateTimeOffset.Now);
+            DateTimeOffset.Now,
+            prodWrites.GetView());
     }
 
     static LiveStatusChips BuildLiveStatusChips(

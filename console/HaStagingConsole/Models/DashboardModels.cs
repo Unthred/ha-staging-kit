@@ -26,7 +26,12 @@ public sealed record DashboardStatus(
     IReadOnlyList<ComponentIssue> Issues,
     IReadOnlyList<ComponentIssue> HaIssues,
     LiveMetricsSnapshot? LiveMetrics,
-    DateTimeOffset RefreshedAt);
+    DateTimeOffset RefreshedAt,
+    ReleaseSafetyView ReleaseSafety);
+
+public sealed record ReleaseSafetyView(
+    bool ProdWritesEnabled,
+    string? LockMessage);
 
 public sealed record LiveMetricsSnapshot(
     LiveStatusChips Status,
@@ -370,6 +375,22 @@ public sealed record EntityDeployRecheckDelta(
     IReadOnlyList<string> NewEntityIds,
     DateTimeOffset? PreviousScanAt);
 
+public sealed record ProdEntityNamingIssue(
+    string PrimaryEntityId,
+    string Kind,
+    string Summary,
+    string ManualFixSummary,
+    string? ExpectedEntityId,
+    string? WrongEntityId,
+    string? BlockerEntityId,
+    string? BlockerPlatform,
+    string? BlockerDisabledBy,
+    string? LivePlatform,
+    string? DeviceName,
+    IReadOnlyList<string> ProdFixSteps,
+    string? ProdFixAction,
+    IReadOnlyList<string> GitReferences);
+
 public sealed record ProdStoragePreflightResult(
     bool Ok,
     int EntityRefCount,
@@ -388,7 +409,8 @@ public sealed record ProdStoragePreflightResult(
     string? LovelaceUndoDescription,
     IReadOnlyList<Z2mStaleConfigIssue> Z2mConfigIssues,
     IReadOnlyList<LovelaceMissingEntityIssue> DeployMissingEntityIssues,
-    bool AllowProdRegistryPurge);
+    bool AllowProdRegistryPurge,
+    IReadOnlyList<ProdEntityNamingIssue> ProdNamingIssues);
 
 public sealed record LovelaceParityFixRequest(
     string EntityId,
@@ -399,7 +421,23 @@ public sealed record PurgeProdDeletedEntitiesRequest(string EntityId, string? Si
 
 public sealed record FixProdEntitySuffixRequest(string ExpectedEntityId, string SuffixProdEntityId);
 
-public sealed record FixProdEntityIdRequest(string ExpectedEntityId, string WrongProdEntityId);
+public sealed record FixProdEntityIdRequest(
+    string ExpectedEntityId,
+    string WrongProdEntityId,
+    bool RelaxedUniqueId = false);
+
+public sealed record ExportMigrationRequest(
+    string Source,
+    ProdEntityNamingIssue? Naming = null,
+    LovelaceMissingEntityIssue? DeployGate = null);
+
+public sealed record ExportMigrationResult(
+    bool Ok,
+    string Message,
+    string? ManifestPath,
+    string? ManifestId,
+    IReadOnlyList<string> GitFilesChanged,
+    int GitChangeCount);
 
 public sealed record LovelaceParityFixResult(
     bool Ok,
@@ -466,7 +504,10 @@ public sealed record SettingsView(
     SidecarIntervals Intervals,
     string? StagingHaContainer,
     StagingTargetSnapshot? StagingTarget,
-    AppearanceSettings Appearance);
+    AppearanceSettings Appearance,
+    ReleaseSafetyView ReleaseSafety);
+
+public sealed record ReleaseSafetySettingsRequest(bool ProdWritesEnabled);
 
 public sealed record SidecarIntervals(
     int PersonPollIntervalSeconds,

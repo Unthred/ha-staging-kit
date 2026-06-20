@@ -15,8 +15,6 @@ public static class PreflightProgressStore
     static int ScanGeneration;
     static int OwnerGeneration;
 
-    public const int LovelacePanelStepCount = 18;
-
     public static IDisposable BeginScan(int totalSteps, string initialLabel = "Starting entity deploy scan…")
     {
         lock (Gate)
@@ -33,6 +31,17 @@ public static class PreflightProgressStore
                 initialLabel,
                 DateTimeOffset.UtcNow);
             return new ScanHandle(generation);
+        }
+    }
+
+    public static void SetTotalSteps(int totalSteps)
+    {
+        lock (Gate)
+        {
+            if (Current is null || !Current.Active)
+                return;
+
+            Current = Current with { TotalSteps = Math.Max(Math.Max(totalSteps, Current.Step), 1) };
         }
     }
 

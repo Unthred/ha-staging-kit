@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { dashboardApi, operationsApi, toApiError, type DashboardStatus } from "../api";
 import { Chip } from "./Chip";
 import { isMirrorControlMode, mirrorModeChipStatus, mirrorModeLabel } from "../lib/mirrorMode";
@@ -6,14 +6,21 @@ import { isMirrorControlMode, mirrorModeChipStatus, mirrorModeLabel } from "../l
 export function MirrorControlModeToggle({
   compact = false,
   inline = false,
+  layout = "panel",
   mirror: mirrorProp,
+  statusLoading = false,
   onChanged,
 }: {
   compact?: boolean;
   inline?: boolean;
+  /** panel = full card; row = compact single-line row (Operations); inline = Environment stat */
+  layout?: "panel" | "row" | "inline";
   mirror?: DashboardStatus["mirror"] | null;
+  /** Parent is still loading mirror status — keeps row height stable */
+  statusLoading?: boolean;
   onChanged?: () => void;
 }) {
+  const toggleId = useId();
   const usesExternalMirror = mirrorProp !== undefined;
   const [mirror, setMirror] = useState<DashboardStatus["mirror"] | null>(mirrorProp ?? null);
   const [loading, setLoading] = useState(!usesExternalMirror);
@@ -21,6 +28,8 @@ export function MirrorControlModeToggle({
   const [confirmEnable, setConfirmEnable] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const resolvedLayout = inline ? "inline" : layout;
 
   useEffect(() => {
     if (usesExternalMirror) {
@@ -48,9 +57,10 @@ export function MirrorControlModeToggle({
     void refresh();
   }, [refresh, usesExternalMirror]);
 
+  const showLoading = statusLoading || (loading && !mirror);
   const controlOn = isMirrorControlMode(mirror?.mode);
   const configured = mirror?.configured ?? false;
-  const disabled = !configured || busy || loading;
+  const disabled = !configured || busy || showLoading;
 
   const applyMode = async (enableControl: boolean) => {
     setBusy(true);
@@ -91,10 +101,10 @@ export function MirrorControlModeToggle({
         Only enable while actively testing.
       </p>
       <div className="step-actions-right ops-actions">
-        <button type="button" className="btn danger" disabled={busy} onClick={() => void applyMode(true)}>
+        <button type="button" className="btn danger btn-compact" disabled={busy} onClick={() => void applyMode(true)}>
           {busy ? "Applying…" : "Yes, turn on control mode"}
         </button>
-        <button type="button" className="btn secondary" disabled={busy} onClick={() => setConfirmEnable(false)}>
+        <button type="button" className="btn secondary btn-compact" disabled={busy} onClick={() => setConfirmEnable(false)}>
           Cancel
         </button>
       </div>
@@ -102,10 +112,10 @@ export function MirrorControlModeToggle({
   ) : null;
 
   const toggle = (
-    <label className={`toggle ${disabled ? "toggle-disabled" : ""}`} htmlFor="mirror-control-mode">
+    <label className={`toggle ${disabled ? "toggle-disabled" : ""}`} htmlFor={toggleId}>
       <span className="toggle-label">Control mode</span>
       <input
-        id="mirror-control-mode"
+        id={toggleId}
         type="checkbox"
         role="switch"
         checked={controlOn}
@@ -115,17 +125,17 @@ export function MirrorControlModeToggle({
       <span className="toggle-track" aria-hidden="true">
         <span className="toggle-thumb" />
       </span>
-      <span className="toggle-state">{controlOn ? "On" : "Off"}</span>
+      <span className="toggle-state">{showLoading ? "…" : controlOn ? "On" : "Off"}</span>
     </label>
   );
 
-  if (inline) {
+  if (resolvedLayout === "inline") {
     return (
       <div
-        className={`dash-env-stat dash-env-mirror-control ${controlOn ? "dash-env-mirror-control-on" : ""}${loading ? " dash-env-mirror-control-loading" : ""}`}
+        className={`dash-env-stat dash-env-mirror-control ${controlOn ? "dash-env-mirror-control-on" : ""}${showLoading ? " dash-env-mirror-control-loading" : ""}`}
       >
         <span className="dash-stat-label">Control mode</span>
-        {loading ? (
+        {showLoading ? (
           <span className="dash-stat-value muted">…</span>
         ) : !configured ? (
           <span className="dash-stat-value muted">Not configured</span>
@@ -135,7 +145,7 @@ export function MirrorControlModeToggle({
             <Chip status={mirrorModeChipStatus(mirror?.mode)} label={mirrorModeLabel(mirror?.mode)} />
           </div>
         )}
-        {!mirror?.running && configured && !loading && (
+        {!mirror?.running && configured && !showLoading && (
           <p className="muted mirror-mode-warn dash-env-mirror-control-warn">Bridge not running</p>
         )}
         {confirmBox}
@@ -144,7 +154,43 @@ export function MirrorControlModeToggle({
     );
   }
 
-  if (loading && !mirror) {
+  if (resolvedLayout === "row") {
+    return (
+      <div
+        className={`mirror-mode-row-ops${controlOn ? " mirror-mode-row-ops--control" : ""}${showLoading ? " mirror-mode-row-ops--loading" : ""}`}
+        aria-busy={showLoading}
+      >
+        <div className="mirror-mode-row-ops-main">
+          {showLoading ? (
+            <span className="mirror-mode-row-ops-placeholder toggle toggle-disabled" aria-hidden="true">
+              <span className="toggle-label">Control mode</span>
+              <span className="toggle-track">
+                <span className="toggle-thumb" />
+              </span>
+              <span className="toggle-state">…</span>
+            </span>
+          ) : !configured ? (
+            <p className="muted mirror-mode-row-ops-unconfigured">
+              Mirror not configured — deploy the mirror first, then control mode can be toggled here.
+            </p>
+          ) : (
+            <>
+              {toggle}
+              <Chip status={mirrorModeChipStatus(mirror?.mode)} label={mirrorModeLabel(mirror?.mode)} />
+              {!mirror?.running && (
+                <span className="muted warn mirror-mode-row-ops-warn">Bridge not running</span>
+              )}
+            </>
+          )}
+        </div>
+        {confirmBox}
+        {message && !error && !confirmEnable && <p className="muted mirror-mode-row-ops-msg">{message}</p>}
+        {error && <p className="msg err mirror-mode-row-ops-err">{error}</p>}
+      </div>
+    );
+  }
+
+  if (showLoading && !mirror) {
     return (
       <div className={`mirror-mode-panel mirror-mode-skeleton${compact ? " mirror-mode-panel-compact" : ""}`}>
         <p className="muted">Loading mirror status…</p>

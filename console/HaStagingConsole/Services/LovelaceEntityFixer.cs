@@ -444,6 +444,9 @@ static class LovelaceEntityFixer
     }
 
     static bool IsEntityId(string? value) =>
+        IsEntityIdPublic(value);
+
+    internal static bool IsEntityIdPublic(string? value) =>
         !string.IsNullOrWhiteSpace(value)
         && value.Contains('.', StringComparison.Ordinal)
         && !value.StartsWith("custom:", StringComparison.OrdinalIgnoreCase)

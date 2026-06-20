@@ -17,6 +17,11 @@ public sealed class KitPaths(IConfiguration config)
     public string SshKeyFile => Path.Combine(SecretsDir, "id_ed25519");
     public string LastProdDeployShaFile => Path.Combine(SidecarData, "last-prod-deploy.sha");
     public string LastProdDeployPreviousShaFile => Path.Combine(SidecarData, "last-prod-deploy-previous.sha");
+    public string ReleaseHistoryFile => Path.Combine(SidecarData, "release-history.json");
+    public string MigrationsAppliedFile => Path.Combine(SidecarData, "migrations-applied.json");
+    public string ReleaseLockFile => Path.Combine(SidecarData, "release.lock");
+    public string ReleaseSnapshotsDir => Path.Combine(SidecarData, "release-snapshots");
+    public string ReleaseReportsDir => Path.Combine(SidecarData, "release-reports");
     public string DeployScript => Path.Combine(KitRoot, "scripts", "deploy.sh");
     public string DeployMirrorScript => Path.Combine(KitRoot, "scripts", "deploy-mirror.sh");
     public string MirrorControlScript => Path.Combine(KitRoot, "scripts", "mirror-control-mode.sh");

@@ -6,8 +6,9 @@ import { DashboardInstanceMonitoring } from "../components/dashboard/DashboardIn
 import { DashboardMetricCard } from "../components/dashboard/DashboardMetricCard";
 import { DashboardLiveMetrics } from "../components/dashboard/DashboardLiveMetrics";
 import {
-  DeployFlowGateSection,
+  DeployFlowGateHint,
   DeployFlowShipSection,
+  DeployFlowZ2mChecklist,
 } from "../components/dashboard/DeployFlowPanel";
 import { DashboardPageShell } from "../components/dashboard/DashboardPageShell";
 import { shortDetail, statusTone } from "../lib/dashboardHealth";
@@ -84,7 +85,10 @@ export default function DashboardLivePage() {
       <div className="dash-live-grid">
         <div className="dash-live-primary-stack">
           {gitConfigured && (
-            <DeployFlowGateSection flow={deployFlow} attentionOrder={overviewOrders["deploy-gate"]} />
+            <>
+              <DeployFlowGateHint flow={deployFlow} attentionOrder={overviewOrders["deploy-gate"]} />
+              <DeployFlowZ2mChecklist flow={deployFlow} />
+            </>
           )}
 
           <DashboardInstanceMonitoring

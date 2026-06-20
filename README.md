@@ -2,7 +2,9 @@
 
 OS-agnostic Docker stack for **Home Assistant staging**: web UI, config sync, and optional MQTT mirror — **one container**.
 
-Your HA YAML lives in a **separate config git repo**. This repo is infrastructure only — it applies git to **staging** (workbench); **prod HA** is live truth for the running home.
+Your HA YAML lives in a **separate config git repo**. This repo is the kit (diagnose, review, git promotion); **the kit writes git** — you work in staging HA and the kit UI.
+
+Design principles: [docs/architecture.md](docs/architecture.md#principles-north-star).
 
 ## Prerequisites
 

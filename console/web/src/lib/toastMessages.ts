@@ -99,9 +99,21 @@ const presets: Record<string, ActionToastPreset> = {
     successIcon: "✅",
     errorIcon: "🚨",
   },
+  "request-release": {
+    success: "Release applied — migrations run, config deployed, prod updated.",
+    error: "Release failed — see Diagnostics for the error log.",
+    successIcon: "🚢",
+    errorIcon: "🚨",
+  },
   "rollback-prod": {
     success: "Prod HA rolled back — previous deploy restored and reloaded.",
     error: "Prod rollback failed — see Diagnostics for details.",
+    successIcon: "⏪",
+    errorIcon: "🚨",
+  },
+  "rollback-release": {
+    success: "Release rolled back — prod restored to the previous release snapshot.",
+    error: "Release rollback failed — see Diagnostics for details.",
     successIcon: "⏪",
     errorIcon: "🚨",
   },

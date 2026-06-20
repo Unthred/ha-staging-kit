@@ -203,7 +203,52 @@ public sealed class ProdStorageDeployService(
             null,
             deploy.Z2mConfigIssues,
             deployAwaitingPublish,
-            allowProdRegistryPurge);
+            allowProdRegistryPurge,
+            []);
+    }
+
+    public async Task<IReadOnlyList<ProdEntityNamingIssue>> ScanProdNamingIssuesAsync(
+        IEnumerable<string> lovelaceEntityIds,
+        CancellationToken ct) =>
+        await BuildProdNamingIssuesCoreAsync(lovelaceEntityIds, ct);
+
+    public async Task<IReadOnlyList<ProdEntityNamingIssue>> ScanProdNamingIssuesAsync(CancellationToken ct) =>
+        await BuildProdNamingIssuesCoreAsync([], ct);
+
+    public static ProdStoragePreflightResult AttachProdNamingIssues(
+        ProdStoragePreflightResult result,
+        IReadOnlyList<ProdEntityNamingIssue> namingIssues)
+    {
+        if (namingIssues.Count == 0)
+            return result with { ProdNamingIssues = namingIssues };
+
+        var message =
+            $"{namingIssues.Count} prod entity naming issue(s) — `_2` / numeric cast suffixes that should be cleaned up on prod.";
+        var issues = result.Issues.Any(i => i.Contains("prod entity naming issue", StringComparison.Ordinal))
+            ? result.Issues
+            : result.Issues.Concat([message]).ToList();
+
+        return result with { ProdNamingIssues = namingIssues, Issues = issues };
+    }
+
+    async Task<IReadOnlyList<ProdEntityNamingIssue>> BuildProdNamingIssuesCoreAsync(
+        IEnumerable<string> lovelaceEntityIds,
+        CancellationToken ct)
+    {
+        var registry = await prodRegistry.ReadAsync(ct);
+        if (registry is null)
+            return [];
+
+        var (prodUrl, prodToken) = TokenFile.Read(paths.ProdTokenFile);
+        if (string.IsNullOrWhiteSpace(prodUrl) || string.IsNullOrWhiteSpace(prodToken))
+            return [];
+
+        var prodLiveIds = await FetchEntityIdsAsync(prodUrl, prodToken, ct);
+        if (prodLiveIds is null)
+            return [];
+
+        var gitRefs = ProdEntityNamingAnalysis.CollectGitEntityReferences(lovelaceEntityIds);
+        return ProdEntityNamingAnalysis.BuildIssues(registry, prodLiveIds, gitRefs);
     }
 
     static IReadOnlyList<LovelaceMissingEntityIssue> EnrichAwaitingPublishActions(
@@ -466,7 +511,8 @@ public sealed class ProdStorageDeployService(
                 null,
                 [],
                 [],
-                false),
+                false,
+                []),
             z2mIssues);
     }
 
@@ -509,7 +555,8 @@ public sealed class ProdStorageDeployService(
                 null,
                 [],
                 [],
-                false),
+                false,
+                []),
             z2mIssues);
     }
 
@@ -587,7 +634,8 @@ public sealed class ProdStorageDeployService(
             null,
             [],
             [],
-            false);
+            false,
+            []);
 
     static ProdStoragePreflightResult EmptyResult(int entityRefCount, IReadOnlyList<string> issues) =>
         EmptyPreflight(entityRefCount, issues);

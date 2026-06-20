@@ -8,7 +8,8 @@ public sealed class SettingsService(
     OnboardingBootstrap bootstrap,
     OnboardingStore store,
     StagingTargetBuilder stagingTarget,
-    MirrorEndpointResolver mirrorEndpoints)
+    MirrorEndpointResolver mirrorEndpoints,
+    ProdWritesGuard prodWrites)
 {
     public async Task<SettingsView> GetAsync(CancellationToken ct)
     {
@@ -36,7 +37,8 @@ public sealed class SettingsService(
                 sidecar.GetValueOrDefault("SKIP_STORAGE_SYNC", "0") is "1" or "true" or "yes"),
             kit.GetValueOrDefault("STAGING_HA_CONTAINER", ""),
             stagingTargetInfo,
-            state.Appearance);
+            state.Appearance,
+            prodWrites.GetView());
     }
 
     public SettingsView Get() => GetAsync(CancellationToken.None).GetAwaiter().GetResult();
@@ -77,6 +79,14 @@ public sealed class SettingsService(
         state.Appearance = NormalizeAppearance(appearance);
         store.Save(state);
         return state.Appearance;
+    }
+
+    public ReleaseSafetyView SaveReleaseSafety(bool prodWritesEnabled)
+    {
+        var state = bootstrap.LoadOrBootstrap();
+        state.ProdWritesEnabled = prodWritesEnabled;
+        store.Save(state);
+        return prodWrites.GetView();
     }
 
     static AppearanceSettings NormalizeAppearance(AppearanceSettings appearance)

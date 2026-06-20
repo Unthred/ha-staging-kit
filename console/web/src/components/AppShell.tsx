@@ -1,11 +1,14 @@
 import { NavLink, Outlet } from "react-router-dom";
+import { ReleaseSafetyProvider } from "../context/ReleaseSafetyContext";
 import { NavAttentionProvider, useNavAttentionContext } from "../context/NavAttentionContext";
 import { useBootstrapHaUrls } from "../hooks/useBootstrapHaUrls";
 import { NavAttentionBadge } from "./NavAttentionBadge";
+import { ReleaseSafetyBanner } from "./ReleaseSafetyBanner";
 
 const links = [
   { to: "/", label: "Overview", end: true },
   { to: "/environment", label: "Environment" },
+  { to: "/activity", label: "Activity" },
   { to: "/diagnostics", label: "Diagnostics" },
   { to: "/operations", label: "Operations" },
   { to: "/settings", label: "Settings" },
@@ -34,6 +37,7 @@ function AppShellFrame() {
           ))}
         </nav>
       </header>
+      <ReleaseSafetyBanner />
       <Outlet />
     </div>
   );
@@ -42,7 +46,9 @@ function AppShellFrame() {
 export function AppShell() {
   return (
     <NavAttentionProvider>
-      <AppShellFrame />
+      <ReleaseSafetyProvider>
+        <AppShellFrame />
+      </ReleaseSafetyProvider>
     </NavAttentionProvider>
   );
 }

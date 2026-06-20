@@ -30,6 +30,7 @@ Use this when changing sync scripts, deploy paths, or onboarding copy.
 | `restore_state`, `bluetooth`, `counter` | prod → staging | **No** | Device state clash | Already excluded |
 | `mobile_app` creds | prod → staging | **No** | Phones would report to wrong instance | Never sync; person **poller** mirrors state |
 | Person/tracker **state** | prod REST → staging REST | **Yes** (poller) | Stale presence on staging | Kit tokens; not credential copy |
+| Non-MQTT **entity state** (ESPHome, Z-Wave, cloud poll, …) | prod WebSocket → staging REST | **Planned** (Phase 2 [#20](https://github.com/Unthred/ha-staging-kit/issues/20)) | Stale sensors on staging | Kit state mirror; read-only prod; existing entity ids only |
 | Kit LLAT files | operator → kit secrets | **Staging-only** | 401 on all staging API ops | Regenerate in Settings after token incidents |
 | MQTT bridge | prod ↔ kit mirror | **Yes** | Live device state | Read-only default; control mode time-boxed |
 | LAN integrations (ESPHome, cast, …) | disable on staging | **N/A** | Staging actuates real hardware | `disable-lan-integrations.sh` after apply |
@@ -74,11 +75,17 @@ See [person-presence-sync.md](person-presence-sync.md).
 
 See [design-entity-deploy-scan.md](design-entity-deploy-scan.md).
 
-### 6. MQTT mirror control mode — **opt-in only**
+### 6. Non-MQTT live state — **Phase 2 state mirror** (planned)
+
+**Rule:** Sidecar subscribes to prod state changes and writes matching states to staging for allowlisted entities already in the synced registry. Does not create entities or call prod services.
+
+See [design-staging-state-mirror-phase2.md](design-staging-state-mirror-phase2.md) ([#20](https://github.com/Unthred/ha-staging-kit/issues/20)).
+
+### 7. MQTT mirror control mode — **opt-in only**
 
 **Rule:** Default read-only. Control mode forwards `zigbee2mqtt/+/set` to prod — real devices move. Disable after tests.
 
-### 7. Cloud / OAuth integrations — **preserve staging tokens after storage sync**
+### 8. Cloud / OAuth integrations — **preserve staging tokens after storage sync**
 
 **Rule:** Prod and staging **can both** be linked to the same cloud service (SmartThings, Tuya, etc.) — each Home Assistant instance needs **its own** OAuth tokens. Storage sync copies prod’s `core.config_entries`, then **restores staging OAuth entries** for domains in `OAUTH_PRESERVE_DOMAINS` (default: `smartthings tuya`) — same pattern as the MQTT broker patch.
 
@@ -135,6 +142,22 @@ See [design-entity-deploy-scan.md](design-entity-deploy-scan.md).
 | MQTT entities unavailable on staging | Run storage sync + confirm broker patch log line |
 | SmartThings / Tuya “failed to initialize” after sync | Re-auth **once** on staging; later syncs preserve tokens if domain is in `OAUTH_PRESERVE_DOMAINS` |
 | No staging integration issues but prod has many | Usually token 401, not “healthy staging” |
+
+---
+
+## Activity page (automation / script logbook)
+
+The kit **Activity** page (`/activity`) streams **logbook** entries for `automation.*` and `script.*` from prod and staging via Home Assistant WebSocket (`logbook/event_stream`), merged in the browser over SignalR.
+
+| Expectation | Detail |
+|-------------|--------|
+| **What it shows** | That an automation or script **ran** (name, entity_id, time, short message) — not step-by-step trace (use HA Trace UI for that). |
+| **Staging is often quieter** | LAN integrations are disabled on staging; person presence is **polled** from prod, not live phone GPS — many prod triggers never fire on staging. |
+| **Parity hint** | When the same `entity_id` fires on both instances within ~60s, the UI marks a **Both instances** badge — useful after ship/apply, not a guarantee of full behavioral parity. |
+| **Tokens** | Invalid staging LLAT → connection chip shows auth failure; fix in Settings → Staging (same as diagnostics `_kit`). |
+| **Not persisted** | Ring buffer (~500 events per instance) in kit memory only; restarts clear history. Live overview hourly chart remains on Dashboard. |
+
+Use Activity as a **workbench signal** (“did this automation run on staging after deploy?”), not as proof that staging reproduces prod load or device behavior.
 
 ---
 

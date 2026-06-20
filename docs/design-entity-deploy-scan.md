@@ -49,6 +49,19 @@ When the dashboard expects `light.foo` but prod has `light.foo_2`, the scan dete
 
 **Manual alternative:** Settings → Entities on prod, then Recheck.
 
+### Prod naming hygiene scan (deploy gate)
+
+Separate from dashboard blockers, the kit scans **all** prod registry entities for:
+
+| Pattern | Meaning | Target | Kit fix |
+|---------|---------|--------|---------|
+| `{name}_2` + base blocked | Suffix collision | Rename `_2` → base after deleting blocker | **Fix entity id on prod** |
+| `{name}_3` + platform `cast` | Second platform on same Shield | Rename → `{name}_cast` | **Fix entity id on prod** (relaxed registry rename) |
+
+Shown in deploy gate under **Prod entity naming** — advisory (does not block deploy). Cross-references git (`scripts.yaml`, `automations.yaml`, Lovelace) when those ids appear in the repo.
+
+Example target state (same device, two platforms): `zaphod_shield` + `zaphod_shield_cast` — not `zaphod_shield_3`.
+
 ## Purge deleted registry tombstones (prod)
 
 When a replaced sensor leaves invisible `deleted_entities` rows in prod `.storage/core.entity_registry`, HA reserves the entity id even though it does not appear in Devices or Entities. Z2M “friendly name already in use” / “Update HA entity id” often fails until tombstones are removed.

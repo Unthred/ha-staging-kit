@@ -4,7 +4,12 @@ import {
   type LovelaceFixOption,
   type LovelaceMissingEntityIssue,
 } from "../../api";
+import {
+  canExportMigrationFromDeployGate,
+  exportMigrationDeployGateBody,
+} from "../../lib/migrationExport";
 import { ActionButton } from "../ActionButton";
+import { ExportMigrationPanel } from "./ExportMigrationPanel";
 
 function kindLabel(kind: string, issueClass?: string): string {
   switch (issueClass ?? kind) {
@@ -50,6 +55,8 @@ export type LovelaceIssueDetailBodyProps = {
   confirmPurgeDeleted?: boolean;
   setConfirmPurgeDeleted?: (value: boolean) => void;
   allowProdRegistryPurge?: boolean;
+  allowProdFix?: boolean;
+  prodWritesLockMessage?: string;
   selectedChoiceId?: string | null;
   setSelectedChoiceId?: (entityId: string) => void;
   selectedChoice?: { entityId: string } | null;
@@ -60,6 +67,7 @@ export type LovelaceIssueDetailBodyProps = {
   onPurgeFailure?: () => void;
   onProdSuffixFixDone?: () => void;
   onProdSuffixFixFailure?: () => void;
+  onExportDone?: () => void;
 };
 
 function awaitingFixLabel(action?: string | null): string {
@@ -86,6 +94,8 @@ export function LovelaceIssueDetailBody({
   confirmPurgeDeleted = false,
   setConfirmPurgeDeleted,
   allowProdRegistryPurge = false,
+  allowProdFix = false,
+  prodWritesLockMessage,
   selectedChoiceId,
   setSelectedChoiceId,
   selectedChoice,
@@ -96,6 +106,7 @@ export function LovelaceIssueDetailBody({
   onPurgeFailure,
   onProdSuffixFixDone,
   onProdSuffixFixFailure,
+  onExportDone,
 }: LovelaceIssueDetailBodyProps) {
   const [confirmProdSuffixFix, setConfirmProdSuffixFix] = useState(false);
   return (
@@ -123,6 +134,13 @@ export function LovelaceIssueDetailBody({
         <div className="deploy-lovelace-gate-manual-fix">
           <h5>What to do</h5>
           <p>{issue.manualFixSummary}</p>
+          {canExportMigrationFromDeployGate(issue) && (
+            <ExportMigrationPanel
+              request={exportMigrationDeployGateBody(issue)}
+              disabled={measure || fixBusy}
+              onDone={onExportDone}
+            />
+          )}
           {(issue.prodContext?.prodFixSteps?.length ?? 0) > 0 && (
             <div className="deploy-lovelace-gate-prod-fix-steps">
               <h5>Fix on prod before deploy</h5>
@@ -137,7 +155,11 @@ export function LovelaceIssueDetailBody({
               </ol>
               {issue.prodContext?.similarProdEntityId && issue.prodContext?.prodFixAction && (
                 <div className="deploy-lovelace-gate-prod-fix-action">
-                  {!confirmProdSuffixFix ? (
+                  {!allowProdFix ? (
+                    <p className="muted deploy-lovelace-gate-prod-locked">
+                      {prodWritesLockMessage ?? "Prod writes are locked — enable in Settings → Release safety."}
+                    </p>
+                  ) : !confirmProdSuffixFix ? (
                     <button
                       type="button"
                       className="btn primary btn-compact"
