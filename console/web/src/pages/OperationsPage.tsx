@@ -223,7 +223,6 @@ export default function OperationsPage() {
               )}
               <OpsTaskPanel
                 title="Baseline from prod"
-                variant="warn"
                 description={
                   <>
                     Use this when you want a clean workbench: git, GitHub, and staging all match prod today. Unlike{" "}
@@ -235,7 +234,7 @@ export default function OperationsPage() {
                   !confirmBaseline ? (
                     <button
                       type="button"
-                      className="btn danger btn-compact"
+                      className="btn danger"
                       disabled={!gitConfigured}
                       onClick={openBaselineConfirm}
                     >
@@ -288,7 +287,7 @@ export default function OperationsPage() {
                         />
                         <button
                           type="button"
-                          className="btn secondary btn-compact"
+                          className="btn secondary"
                           onClick={() => setConfirmBaseline(false)}
                         >
                           Cancel
@@ -310,7 +309,6 @@ export default function OperationsPage() {
               </OpsTaskPanel>
               <OpsTaskPanel
                 title="Reset workbench"
-                variant="warn"
                 description={
                   <>
                     Discards unsaved dashboard edits and Entity Janitor defer/undo state, re-applies git from GitHub{" "}
@@ -322,7 +320,7 @@ export default function OperationsPage() {
                   !confirmResetWorkbench ? (
                     <button
                       type="button"
-                      className="btn secondary btn-compact"
+                      className="btn secondary"
                       disabled={!gitConfigured}
                       onClick={() => setConfirmResetWorkbench(true)}
                     >
@@ -353,7 +351,7 @@ export default function OperationsPage() {
                         />
                         <button
                           type="button"
-                          className="btn secondary btn-compact"
+                          className="btn secondary"
                           onClick={() => setConfirmResetWorkbench(false)}
                         >
                           Cancel
@@ -423,7 +421,6 @@ export default function OperationsPage() {
                       label="Person poll now"
                       toastPreset="person-poll"
                       onRun={operationsApi.personPoll}
-                      variant="secondary"
                       attentionOrder={actionOrders["person-poll"]}
                       onDone={afterOp}
                       onFailure={onOpFailure}
@@ -458,7 +455,6 @@ export default function OperationsPage() {
               </OpsCallout>
               <OpsTaskPanel
                 title="Run storage sync"
-                variant="warn"
                 description={
                   <>
                     <strong>Auth is not copied</strong> — staging keeps its own users and API tokens so the kit token
@@ -481,7 +477,6 @@ export default function OperationsPage() {
                         label="Restart staging HA"
                         toastPreset="restart-staging"
                         onRun={operationsApi.restartStaging}
-                        variant="secondary"
                         attentionOrder={actionOrders["restart-staging"]}
                         onDone={afterOp}
                         onFailure={onOpFailure}
@@ -636,7 +631,6 @@ export default function OperationsPage() {
                     label="Restart staging HA"
                     toastPreset="restart-staging"
                     onRun={operationsApi.restartStaging}
-                    variant="secondary"
                     attentionOrder={actionOrders["restart-staging"]}
                     onDone={afterOp}
                     onFailure={onOpFailure}

@@ -42,7 +42,7 @@ export function ReleaseSafetySettingsPanel() {
 
       {prodWritesEnabled ? (
         <div className="release-safety-actions">
-          <button type="button" className="btn secondary" disabled={busy} onClick={() => save(false)}>
+          <button type="button" className="btn primary" disabled={busy} onClick={() => save(false)}>
             Lock prod writes again
           </button>
         </div>

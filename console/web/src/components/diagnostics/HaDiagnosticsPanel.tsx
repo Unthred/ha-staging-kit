@@ -26,17 +26,6 @@ function countIssuesForSource(issues: ComponentIssue[], source: string) {
   return issues.filter((i) => i.source === source).length;
 }
 
-function defaultInstanceTab(issues: ComponentIssue[]): InstanceTab {
-  const stagingErrors = issues.filter((i) => i.source === "Staging HA" && i.level === "error").length;
-  const prodErrors = issues.filter((i) => i.source === "Production HA" && i.level === "error").length;
-  if (prodErrors > stagingErrors) return "production";
-  if (stagingErrors > 0) return "staging";
-  if (countIssuesForSource(issues, "Production HA") > countIssuesForSource(issues, "Staging HA")) {
-    return "production";
-  }
-  return "staging";
-}
-
 function logForSource(data: { prodHaLog: HaLogSnapshot; stagingHaLog: HaLogSnapshot }, source: string) {
   return source === "Production HA" ? data.prodHaLog : data.stagingHaLog;
 }
@@ -57,7 +46,7 @@ export function HaDiagnosticsPanel({
   onSelectIndex: (index: number | null) => void;
 }) {
   const ordered = useMemo(() => sortedIssues(issues), [issues]);
-  const [instanceTab, setInstanceTab] = useState<InstanceTab>(() => defaultInstanceTab(issues));
+  const [instanceTab, setInstanceTab] = useState<InstanceTab>("staging");
   const [viewMode, setViewMode] = useState<HaIssueLogViewMode>("filtered");
 
   const visibleIssues = useMemo(

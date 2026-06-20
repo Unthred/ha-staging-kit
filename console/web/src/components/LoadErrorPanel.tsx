@@ -82,7 +82,7 @@ export function LoadErrorPanel({
 
         <div className="error-actions">
           {onRetry && (
-            <button type="button" className="btn secondary" onClick={onRetry}>
+            <button type="button" className="btn primary" onClick={onRetry}>
               Retry
             </button>
           )}

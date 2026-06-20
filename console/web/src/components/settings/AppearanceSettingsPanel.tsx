@@ -248,7 +248,7 @@ export function AppearanceSettingsPanel() {
       </div>
 
       <div className="step-actions-right appearance-reset-row">
-        <button type="button" className="btn secondary" onClick={resetAppearance}>
+        <button type="button" className="btn primary" onClick={resetAppearance}>
           Reset appearance to defaults
         </button>
       </div>

@@ -32,7 +32,6 @@ export function DashboardQuickActions({
         <ActionButton
           label="Storage sync"
           toastPreset="storage-sync"
-          variant="secondary"
           onRun={operationsApi.storageSync}
           onDone={onDone}
         />
@@ -40,7 +39,6 @@ export function DashboardQuickActions({
           <ActionButton
             label="Refresh mirror"
             toastPreset="refresh-mirror"
-            variant="secondary"
             onRun={operationsApi.deployMirror}
             onDone={onDone}
           />
@@ -48,7 +46,6 @@ export function DashboardQuickActions({
         <ActionButton
           label="Restart staging HA"
           toastPreset="restart-staging"
-          variant="secondary"
           onRun={operationsApi.restartStaging}
           onDone={onDone}
         />

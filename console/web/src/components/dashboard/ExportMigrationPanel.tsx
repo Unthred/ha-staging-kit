@@ -21,7 +21,7 @@ export function ExportMigrationPanel({ request, disabled = false, onDone }: Expo
       {!confirmExport ? (
         <button
           type="button"
-          className="btn secondary btn-compact"
+          className="btn primary btn-compact"
           disabled={disabled}
           onClick={() => setConfirmExport(true)}
         >
@@ -36,7 +36,6 @@ export function ExportMigrationPanel({ request, disabled = false, onDone }: Expo
           <div className="deploy-lovelace-gate-action-buttons">
             <ActionButton
               label="Yes, export migration"
-              variant="secondary"
               compact
               onRun={async () => {
                 const result = await operationsApi.exportMigration(request);

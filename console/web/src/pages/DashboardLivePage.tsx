@@ -12,7 +12,7 @@ import {
   DeployFlowZ2mChecklist,
 } from "../components/dashboard/DeployFlowPanel";
 import { DashboardPageShell } from "../components/dashboard/DashboardPageShell";
-import { shortDetail, statusTone } from "../lib/dashboardHealth";
+import { statusTone } from "../lib/dashboardHealth";
 import { isMirrorControlMode, mirrorModeLabel } from "../lib/mirrorMode";
 import { useNavAttentionContext } from "../context/NavAttentionContext";
 import { useAttentionNavigation } from "../hooks/useAttentionNavigation";
@@ -203,8 +203,8 @@ export default function DashboardLivePage() {
                   key={s.name}
                   name={s.name}
                   tone={statusTone(s.status)}
-                  detail={shortDetail(s.detail, 64)}
-                  meta={s.name === "MQTT mirror" ? mirrorMeta(data) : undefined}
+                  detail={s.detail}
+                  meta={s.name === "MQTT mirror" ? (mirrorMeta(data) ?? "—") : undefined}
                   compact
                 />
               ))}
