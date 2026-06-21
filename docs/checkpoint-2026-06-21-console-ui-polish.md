@@ -95,4 +95,4 @@ bash /boot/config/scripts/ha-staging-kit-deploy-quick.sh api
 
 ## Git
 
-Committed on **`main`** — search log for `console UI polish` (2026-06-21).
+Committed on **`main`** @ `8c2eb1b` (pushed to GitHub).
