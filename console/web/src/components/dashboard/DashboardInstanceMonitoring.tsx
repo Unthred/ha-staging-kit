@@ -14,6 +14,7 @@ import type {
   StagingRepresentationStatus,
 } from "../../api";
 import { useStableMinHeight } from "../../hooks/useStableMinHeight";
+import { ResizableSplitPane } from "../ResizableSplitPane";
 import { dashboardApi, operationsApi } from "../../api";
 import { ActionButton } from "../ActionButton";
 import { GitUncommittedFilesDialog } from "./GitUncommittedFilesDialog";
@@ -67,15 +68,12 @@ function EntityList({
   title,
   ids,
   total,
-  onShowAll,
 }: {
   title: string;
   ids: string[];
   total: number;
-  onShowAll?: () => void;
 }) {
   if (total === 0) return null;
-  const extra = total - ids.length;
   return (
     <div>
       <p className="dash-detail-files-col-title">{title} ({total})</p>
@@ -86,15 +84,6 @@ function EntityList({
           </li>
         ))}
       </ul>
-      {extra > 0 && (
-        onShowAll ? (
-          <button type="button" className="dash-parity-more-btn muted" onClick={onShowAll}>
-            + {extra} more — show all
-          </button>
-        ) : (
-          <p className="muted dash-parity-more">+ {extra} more</p>
-        )
-      )}
     </div>
   );
 }
@@ -164,6 +153,164 @@ function DetailReviewButton({ label, onClick }: { label: string; onClick?: () =>
   );
 }
 
+type DetailReviewLink = { key: string; label: string; onClick: () => void };
+
+function detailReviewLinks({
+  rowKey,
+  git,
+  lovelaceDrift,
+  onShowUncommittedFiles,
+  onShowStagingDiff,
+  onShowMainProdDiff,
+  onShowStagingProdLovelaceDiff,
+  onShowUnpushedPushPreview,
+}: {
+  rowKey: MonitoringRowKey;
+  git?: GitSnapshot | null;
+  lovelaceDrift?: LovelaceDriftStatus | null;
+  onShowUncommittedFiles?: () => void;
+  onShowStagingDiff?: () => void;
+  onShowMainProdDiff?: () => void;
+  onShowStagingProdLovelaceDiff?: () => void;
+  onShowUnpushedPushPreview?: (path?: string) => void;
+}): DetailReviewLink[] {
+  const links: DetailReviewLink[] = [];
+
+  if (rowKey === "config" && git?.isDirty && onShowUncommittedFiles) {
+    links.push({
+      key: "config-diffs",
+      label: `Review diffs (${git.changedFileCount ?? 0} file${(git.changedFileCount ?? 0) === 1 ? "" : "s"})…`,
+      onClick: onShowUncommittedFiles,
+    });
+  }
+
+  if (rowKey === "dashboard") {
+    const changed = lovelaceDrift?.changedPaths ?? [];
+    if (lovelaceDrift?.available && onShowStagingProdLovelaceDiff) {
+      links.push({
+        key: "dashboard-diff",
+        label: `Review dashboard diff${changed.length > 0 ? ` (${changed.length} file${changed.length === 1 ? "" : "s"})` : ""}…`,
+        onClick: onShowStagingProdLovelaceDiff,
+      });
+    }
+    if (lovelaceInGitDirty(git) && onShowUncommittedFiles) {
+      links.push({
+        key: "dashboard-commit",
+        label: "Review & commit dashboard in git…",
+        onClick: onShowUncommittedFiles,
+      });
+    }
+  }
+
+  if (rowKey === "staging-main") {
+    const unpushed = git?.commitsAhead ?? 0;
+    const unpushedHaFiles = git?.unpushedHaFiles ?? [];
+    const unpushedRepoFiles = git?.unpushedRepoFiles ?? [];
+    const haFiles = git?.stagingHaFileList ?? [];
+    const docsOnlyDone = stagingDocsOnlyOnGitHub(git);
+    const showStagingMainDiff = stagingProdPathPending(git);
+
+    if (unpushed > 0 && onShowUnpushedPushPreview) {
+      const total = unpushedHaFiles.length + unpushedRepoFiles.length;
+      if (total > 0) {
+        links.push({
+          key: "push-preview",
+          label: `Review push preview (${total} file${total === 1 ? "" : "s"})…`,
+          onClick: () => onShowUnpushedPushPreview(),
+        });
+      }
+    } else if (!docsOnlyDone && showStagingMainDiff && onShowStagingDiff && haFiles.length > 0) {
+      links.push({
+        key: "staging-main-diff",
+        label: `Review ${haFiles.length} HA change${haFiles.length === 1 ? "" : "s"} vs main…`,
+        onClick: onShowStagingDiff,
+      });
+    }
+  }
+
+  if (rowKey === "main-prod") {
+    const haFiles = git?.mainHaFileList ?? [];
+    const storageFiles = git?.mainStorageFileList ?? [];
+    const lovelaceLocalFiles = (git?.haChangedFiles ?? []).filter((f) => f.includes("lovelace"));
+    const hasLocalLovelaceFixes = lovelaceLocalFiles.length > 0;
+    const pendingCount = haFiles.length + storageFiles.length;
+
+    if (hasLocalLovelaceFixes && onShowUncommittedFiles) {
+      links.push({
+        key: "local-lovelace",
+        label: `Review local Lovelace diff${lovelaceLocalFiles.length === 1 ? "" : "s"}…`,
+        onClick: onShowUncommittedFiles,
+      });
+    }
+    if (pendingCount > 0 && onShowMainProdDiff) {
+      links.push({
+        key: "main-prod-diff",
+        label: `Review ${pendingCount} pending change${pendingCount === 1 ? "" : "s"}…`,
+        onClick: onShowMainProdDiff,
+      });
+    }
+  }
+
+  return links;
+}
+
+function DetailActionsReviewLinks({ links }: { links: DetailReviewLink[] }) {
+  if (links.length === 0) return null;
+  return (
+    <div className="dash-detail-actions-reviews">
+      {links.map((link) => (
+        <DetailReviewButton key={link.key} label={link.label} onClick={link.onClick} />
+      ))}
+    </div>
+  );
+}
+
+function DetailActionsFooterLinks({
+  rowKey,
+  git,
+  lovelaceDrift,
+  entityParity,
+  onShowEntityParity,
+  onShowUncommittedFiles,
+  onShowStagingDiff,
+  onShowMainProdDiff,
+  onShowStagingProdLovelaceDiff,
+  onShowUnpushedPushPreview,
+}: {
+  rowKey: MonitoringRowKey;
+  git?: GitSnapshot | null;
+  lovelaceDrift?: LovelaceDriftStatus | null;
+  entityParity?: EntityParitySnapshot | null;
+  onShowEntityParity?: (domain: string, side: "prodOnly" | "stagingOnly") => void;
+  onShowUncommittedFiles?: () => void;
+  onShowStagingDiff?: () => void;
+  onShowMainProdDiff?: () => void;
+  onShowStagingProdLovelaceDiff?: () => void;
+  onShowUnpushedPushPreview?: (path?: string) => void;
+}) {
+  const reviewLinks = detailReviewLinks({
+    rowKey,
+    git,
+    lovelaceDrift,
+    onShowUncommittedFiles,
+    onShowStagingDiff,
+    onShowMainProdDiff,
+    onShowStagingProdLovelaceDiff,
+    onShowUnpushedPushPreview,
+  });
+
+  return (
+    <>
+      <DetailActionsReviewLinks links={reviewLinks} />
+      <DetailActionsEntityParityShowAll
+        rowKey={rowKey}
+        entityParity={entityParity}
+        onShowEntityParity={onShowEntityParity}
+      />
+    </>
+  );
+}
+
 function classifyIds(ids: string[], expectedOnly: boolean) {
   if (expectedOnly) return { unexpected: [] as string[], expected: ids };
   const expected: string[] = [];
@@ -190,7 +337,6 @@ function DomainDetail({
   introSummary,
   introTone,
   automationGitGap,
-  onShowProdOnly,
 }: {
   domain: string;
   domainData?: EntityDomainParity;
@@ -199,7 +345,6 @@ function DomainDetail({
   introSummary?: string;
   introTone?: "ok" | "warn" | "muted";
   automationGitGap?: import("../../api").AutomationGitGapSnapshot | null;
-  onShowProdOnly?: () => void;
 }) {
   if (!domainData) {
     return (
@@ -280,7 +425,6 @@ function DomainDetail({
             title="On production only (live state)"
             ids={domainData.prodOnlySample}
             total={domainData.prodOnlyCount}
-            onShowAll={onShowProdOnly}
           />
         )}
         {stagingOnly.expected.length > 0 && (
@@ -328,6 +472,36 @@ function DashboardShipSteps({
   );
 }
 
+function monitoringRowDomain(rowKey: MonitoringRowKey, entityParity?: EntityParitySnapshot | null) {
+  if (rowKey === "config") return undefined;
+  const domain = rowKey === "person" ? "person" : rowKey;
+  return entityParity?.domains.find((d) => d.domain === domain);
+}
+
+function DetailActionsEntityParityShowAll({
+  rowKey,
+  entityParity,
+  onShowEntityParity,
+}: {
+  rowKey: MonitoringRowKey;
+  entityParity?: EntityParitySnapshot | null;
+  onShowEntityParity?: (domain: string, side: "prodOnly" | "stagingOnly") => void;
+}) {
+  const domainData = monitoringRowDomain(rowKey, entityParity);
+  if (rowKey !== "sensor" || !domainData || !onShowEntityParity) return null;
+  const extra = domainData.prodOnlyCount - domainData.prodOnlySample.length;
+  if (extra <= 0) return null;
+  return (
+    <button
+      type="button"
+      className="dash-parity-more-btn dash-detail-parity-show-all muted"
+      onClick={() => onShowEntityParity(rowKey, "prodOnly")}
+    >
+      + {extra} more — show all
+    </button>
+  );
+}
+
 function DetailActions({
   rowKey,
   representation,
@@ -337,6 +511,13 @@ function DetailActions({
   mirror,
   gitConfigured,
   mirrorConfigured,
+  entityParity,
+  onShowEntityParity,
+  onShowUncommittedFiles,
+  onShowStagingDiff,
+  onShowMainProdDiff,
+  onShowStagingProdLovelaceDiff,
+  onShowUnpushedPushPreview,
   onDone,
   onCommitOpen,
 }: {
@@ -348,6 +529,13 @@ function DetailActions({
   mirror?: DashboardStatus["mirror"];
   gitConfigured: boolean;
   mirrorConfigured: boolean;
+  entityParity?: EntityParitySnapshot | null;
+  onShowEntityParity?: (domain: string, side: "prodOnly" | "stagingOnly") => void;
+  onShowUncommittedFiles?: () => void;
+  onShowStagingDiff?: () => void;
+  onShowMainProdDiff?: () => void;
+  onShowStagingProdLovelaceDiff?: () => void;
+  onShowUnpushedPushPreview?: (path?: string) => void;
   onDone?: () => void;
   onCommitOpen?: () => void;
 }) {
@@ -431,8 +619,24 @@ function DetailActions({
     const docsOnlyConfigDrift =
       configDrift?.hasDrift && !configDrift.applyGapHasHaChanges && Boolean(configDrift.lastAppliedCommit);
     const prodHaCurrent = rowKey === "main-prod" && !prodHaYamlPending(git);
-    if (representation?.verdict === "aligned" || docsOnlyConfigDrift || prodHaCurrent) {
-      if (rowKey !== "sensor") {
+    const reviewLinks = detailReviewLinks({
+      rowKey,
+      git,
+      lovelaceDrift,
+      onShowUncommittedFiles,
+      onShowStagingDiff,
+      onShowMainProdDiff,
+      onShowStagingProdLovelaceDiff,
+      onShowUnpushedPushPreview,
+    });
+    const domainData = monitoringRowDomain(rowKey, entityParity);
+    const parityExtra =
+      rowKey === "sensor" && domainData
+        ? domainData.prodOnlyCount - domainData.prodOnlySample.length
+        : 0;
+    const hasFooterLinks = reviewLinks.length > 0 || parityExtra > 0;
+    if ((representation?.verdict === "aligned" || docsOnlyConfigDrift || prodHaCurrent) && rowKey !== "sensor") {
+      if (!hasFooterLinks) {
         return (
           <div className="dash-detail-actions">
             <p className="dash-detail-ok dash-detail-actions-empty">No action needed for this row.</p>
@@ -442,6 +646,18 @@ function DetailActions({
     }
     return (
       <div className="dash-detail-actions">
+        <DetailActionsFooterLinks
+          rowKey={rowKey}
+          git={git}
+          lovelaceDrift={lovelaceDrift}
+          entityParity={entityParity}
+          onShowEntityParity={onShowEntityParity}
+          onShowUncommittedFiles={onShowUncommittedFiles}
+          onShowStagingDiff={onShowStagingDiff}
+          onShowMainProdDiff={onShowMainProdDiff}
+          onShowStagingProdLovelaceDiff={onShowStagingProdLovelaceDiff}
+          onShowUnpushedPushPreview={onShowUnpushedPushPreview}
+        />
         <p className="dash-detail-more muted">
           <Link to="/operations">All operations</Link>
         </p>
@@ -479,17 +695,23 @@ function DetailActions({
           below.
         </p>
       )}
+      <DetailActionsFooterLinks
+        rowKey={rowKey}
+        git={git}
+        lovelaceDrift={lovelaceDrift}
+        entityParity={entityParity}
+        onShowEntityParity={onShowEntityParity}
+        onShowUncommittedFiles={onShowUncommittedFiles}
+        onShowStagingDiff={onShowStagingDiff}
+        onShowMainProdDiff={onShowMainProdDiff}
+        onShowStagingProdLovelaceDiff={onShowStagingProdLovelaceDiff}
+        onShowUnpushedPushPreview={onShowUnpushedPushPreview}
+      />
       <p className="dash-detail-more muted">
         <Link to="/operations">More operations</Link>
       </p>
     </div>
   );
-}
-
-function monitoringRowDomain(rowKey: MonitoringRowKey, entityParity?: EntityParitySnapshot | null) {
-  if (rowKey === "config") return undefined;
-  const domain = rowKey === "person" ? "person" : rowKey;
-  return entityParity?.domains.find((d) => d.domain === domain);
 }
 
 function MonitoringDetailPane({
@@ -501,13 +723,10 @@ function MonitoringDetailPane({
   git,
   presence,
   mqtt,
-  onShowUncommittedFiles,
   onShowStagingDiff,
-  onShowMainProdDiff,
   onShowStagingProdLovelaceDiff,
   onShowUnpushedPushPreview,
   lovelaceDrift,
-  onShowEntityParity,
 }: {
   rowKey: MonitoringRowKey;
   inventory?: ConfigInventoryStats | null;
@@ -518,12 +737,9 @@ function MonitoringDetailPane({
   presence?: PresenceSummary | null;
   mqtt?: MqttBridgeStats | null;
   lovelaceDrift?: LovelaceDriftStatus | null;
-  onShowUncommittedFiles?: () => void;
   onShowStagingDiff?: () => void;
-  onShowMainProdDiff?: () => void;
   onShowStagingProdLovelaceDiff?: () => void;
   onShowUnpushedPushPreview?: (path?: string) => void;
-  onShowEntityParity?: (domain: string, side: "prodOnly" | "stagingOnly") => void;
 }) {
   const domainMap = new Map((entityParity?.domains ?? []).map((d) => [d.domain, d]));
   const resolvedDomain = monitoringRowDomain(rowKey, entityParity);
@@ -573,10 +789,6 @@ function MonitoringDetailPane({
               variant: lovelaceFiles.length > 0 && otherHaFiles.length > 0 ? "ha" : "docs",
             },
           ]}
-        />
-        <DetailReviewButton
-          label={`Review diffs (${git?.changedFileCount ?? 0} file${(git?.changedFileCount ?? 0) === 1 ? "" : "s"})…`}
-          onClick={git?.isDirty ? onShowUncommittedFiles : undefined}
         />
       </>
     );
@@ -631,13 +843,6 @@ function MonitoringDetailPane({
           ]}
           onFileClick={lovelaceDrift?.available ? () => onShowStagingProdLovelaceDiff?.() : undefined}
         />
-        <DetailReviewButton
-          label={`Review dashboard diff${changed.length > 0 ? ` (${changed.length} file${changed.length === 1 ? "" : "s"})` : ""}…`}
-          onClick={lovelaceDrift?.available ? onShowStagingProdLovelaceDiff : undefined}
-        />
-        {lovelaceDirty && (
-          <DetailReviewButton label="Review & commit dashboard in git…" onClick={onShowUncommittedFiles} />
-        )}
       </>
     );
   }
@@ -731,14 +936,6 @@ function MonitoringDetailPane({
               ]}
               onFileClick={(path) => onShowUnpushedPushPreview?.(path)}
             />
-            <DetailReviewButton
-              label={`Review push preview (${unpushedHaFiles.length + unpushedRepoFiles.length} file${unpushedHaFiles.length + unpushedRepoFiles.length === 1 ? "" : "s"})…`}
-              onClick={
-                unpushedHaFiles.length + unpushedRepoFiles.length > 0
-                  ? () => onShowUnpushedPushPreview?.()
-                  : undefined
-              }
-            />
           </>
         ) : docsOnlyDone ? null : showStagingMainDiff ? (
           <>
@@ -752,10 +949,6 @@ function MonitoringDetailPane({
                 commits — already on GitHub; not part of prod deploy.
               </p>
             )}
-            <DetailReviewButton
-              label={`Review ${haFiles.length} HA change${haFiles.length === 1 ? "" : "s"} vs main…`}
-              onClick={haFiles.length > 0 ? onShowStagingDiff : undefined}
-            />
           </>
         ) : null}
       </>
@@ -829,10 +1022,6 @@ function MonitoringDetailPane({
                 },
               ]}
             />
-            <DetailReviewButton
-              label={`Review local Lovelace diff${lovelaceLocalFiles.length === 1 ? "" : "s"}…`}
-              onClick={onShowUncommittedFiles}
-            />
           </>
         )}
         <DetailFileColumns
@@ -852,10 +1041,6 @@ function MonitoringDetailPane({
             staging.
           </p>
         )}
-        <DetailReviewButton
-          label={`Review ${haFiles.length + storageFiles.length} pending change${haFiles.length + storageFiles.length === 1 ? "" : "s"}…`}
-          onClick={haFiles.length + storageFiles.length > 0 ? onShowMainProdDiff : undefined}
-        />
       </>
     );
   }
@@ -925,11 +1110,6 @@ function MonitoringDetailPane({
         domainData={resolvedDomain}
         gitHint={gitHint}
         automationGitGap={rowKey === "automation" ? inventory?.automationGitGap : undefined}
-        onShowProdOnly={
-          resolvedDomain && resolvedDomain.prodOnlyCount > 0
-            ? () => onShowEntityParity?.(rowKey, "prodOnly")
-            : undefined
-        }
       />
     </div>
   );
@@ -1172,7 +1352,14 @@ export function DashboardInstanceMonitoring({
         </header>
 
         <div className="dash-parity-board-body">
-          <section className="dash-parity-board-col dash-monitoring-table">
+          <ResizableSplitPane
+            id="overview-parity"
+            className="dash-parity-split"
+            defaultRatio={0.5}
+            minStartPx={120}
+            minEndPx={120}
+            start={
+              <section className="dash-parity-board-col dash-monitoring-table">
             <header className="dash-panel-head dash-panel-head-tight dash-parity-table-head">
               <h3>Compare instances</h3>
               <span className="muted dash-table-hint">Select a row for detail — ship actions are below</span>
@@ -1221,8 +1408,9 @@ export function DashboardInstanceMonitoring({
               </table>
             </div>
           </section>
-
-          <section className="dash-parity-board-col dash-monitoring-detail" aria-live="polite">
+            }
+            end={
+              <section className="dash-parity-board-col dash-monitoring-detail" aria-live="polite">
             <header className="dash-panel-head dash-panel-head-tight">
               <h3>{selectedRow?.label ?? "Detail"}</h3>
               {selectedRow && selectedRow.aligned === false && (
@@ -1240,18 +1428,11 @@ export function DashboardInstanceMonitoring({
                 presence={presence}
                 mqtt={mqtt}
                 lovelaceDrift={lovelaceDrift}
-                onShowUncommittedFiles={openCommit}
                 onShowStagingDiff={() => setStagingDiffOpen(true)}
-                onShowMainProdDiff={() => setMainProdDiffOpen(true)}
                 onShowStagingProdLovelaceDiff={() => setStagingProdLovelaceDiffOpen(true)}
                 onShowUnpushedPushPreview={(path) => {
                   setUnpushedPreviewInitialPath(path ?? null);
                   setUnpushedPushPreviewOpen(true);
-                }}
-                onShowEntityParity={(domain, side) => {
-                  setEntityParityDomain(domain);
-                  setEntityParitySide(side);
-                  setEntityParityOpen(true);
                 }}
               />
             </div>
@@ -1264,10 +1445,26 @@ export function DashboardInstanceMonitoring({
               mirror={mirror}
               gitConfigured={gitConfigured ?? false}
               mirrorConfigured={mirrorConfigured ?? false}
+              entityParity={entityParity}
+              onShowEntityParity={(domain, side) => {
+                setEntityParityDomain(domain);
+                setEntityParitySide(side);
+                setEntityParityOpen(true);
+              }}
+              onShowUncommittedFiles={openCommit}
+              onShowStagingDiff={() => setStagingDiffOpen(true)}
+              onShowMainProdDiff={() => setMainProdDiffOpen(true)}
+              onShowStagingProdLovelaceDiff={() => setStagingProdLovelaceDiffOpen(true)}
+              onShowUnpushedPushPreview={(path) => {
+                setUnpushedPreviewInitialPath(path ?? null);
+                setUnpushedPushPreviewOpen(true);
+              }}
               onDone={onRemediate}
               onCommitOpen={openCommit}
             />
           </section>
+            }
+          />
         </div>
       </section>
 

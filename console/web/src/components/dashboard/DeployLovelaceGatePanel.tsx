@@ -17,6 +17,7 @@ import { ProdNamingIssueDetailBody, prodNamingIssueKey, prodNamingKindLabel } fr
 import { DeployLovelaceGateScanProgress } from "./DeployLovelaceGateScanProgress";
 import { usePreflightScanProgress } from "../../hooks/usePreflightScanProgress";
 import { useStableMinHeight } from "../../hooks/useStableMinHeight";
+import { ResizableSplitPane } from "../ResizableSplitPane";
 
 /** Minimum ms between focus-triggered entity deploy rescans. */
 const DEPLOY_GATE_FOCUS_RECHECK_MS = 90_000;
@@ -869,6 +870,49 @@ export function DeployLovelaceGatePanel({
     Boolean(scanSummary) ||
     showRecheckDelta;
 
+  const entityListTabs = (
+    <div className="deploy-lovelace-gate-list-tabs entity-janitor-head-tabs" role="tablist" aria-label="Entity issue lists">
+      <button
+        type="button"
+        role="tab"
+        aria-selected={listTab === "blocking"}
+        className={`deploy-lovelace-gate-list-tab${listTab === "blocking" ? " active" : ""}`}
+        onClick={() => setListTab("blocking")}
+      >
+        Blocking ({blockingIssues.length})
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={listTab === "awaiting"}
+        className={`deploy-lovelace-gate-list-tab${listTab === "awaiting" ? " active" : ""}`}
+        onClick={() => setListTab("awaiting")}
+      >
+        Awaiting ({deployMissingIssues.length})
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={listTab === "deferred"}
+        className={`deploy-lovelace-gate-list-tab${listTab === "deferred" ? " active" : ""}`}
+        onClick={() => setListTab("deferred")}
+      >
+        Deferred ({deferredIssues.length})
+      </button>
+      {showNamingTabUi && (
+        <button
+          type="button"
+          role="tab"
+          aria-selected={listTab === "naming"}
+          className={`deploy-lovelace-gate-list-tab${listTab === "naming" ? " active" : ""}`}
+          onClick={() => setListTab("naming")}
+        >
+          Naming ({prodNamingIssues.length})
+        </button>
+      )}
+    </div>
+  );
+
   return (
     <div
       ref={layout === "inline" ? panelStable.ref : undefined}
@@ -881,78 +925,152 @@ export function DeployLovelaceGatePanel({
             : "deploy-lovelace-gate--blocked"
       }${reviewStacked ? " deploy-lovelace-gate--stacked" : ""}${layout === "workspace" ? " deploy-lovelace-gate--workspace-layout" : ""}${isScanning ? " deploy-lovelace-gate--scanning" : ""}`}
     >
-      <div className="deploy-lovelace-gate-toolbar">
-        <div className="deploy-lovelace-gate-toolbar-main">
-          <p className="deploy-lovelace-gate-toolbar-title">
-            <span>Entity Janitor</span>
-            <SectionAttentionBadge order={attentionOrder} />
-          </p>
-          <div className="deploy-lovelace-gate-toolbar-chips" aria-label="Issue counts">
-            <span className="deploy-lovelace-gate-chip">{blockingIssues.length} blocking</span>
-            <span className="deploy-lovelace-gate-chip">{deployMissingIssues.length} awaiting</span>
-            <span className="deploy-lovelace-gate-chip">{deferredIssues.length} deferred</span>
-            {showNamingTabUi && (
-              <span className="deploy-lovelace-gate-chip">{prodNamingIssues.length} naming</span>
-            )}
+      {layout === "workspace" ? (
+        <header className="entity-janitor-head">
+          <div className="entity-janitor-head-row">
+            <div className="entity-janitor-head-main">
+              <p className="dash-panel-eyebrow">
+                Prod entity scan
+                <SectionAttentionBadge order={attentionOrder} />
+              </p>
+              <div className="entity-janitor-head-meta">
+                <span
+                  className="deploy-lovelace-gate-scan-inline"
+                  aria-hidden={!backgroundScanning || busy}
+                  title={backgroundScanning && !busy ? "Updating scan" : undefined}
+                >
+                  <span
+                    className={`deploy-lovelace-gate-scan-dot${backgroundScanning && !busy ? " is-active" : ""}`}
+                  />
+                </span>
+              </div>
+            </div>
+            <div className="deploy-lovelace-gate-undo-reserve">
+              {showUndoMenu ? (
+                <details className="deploy-lovelace-gate-undo-menu">
+                  <summary className="btn secondary btn-compact">Undo</summary>
+                  <div className="deploy-lovelace-gate-undo-menu-panel">
+                    {data?.canUndoLovelaceFix && (
+                      <button
+                        type="button"
+                        className="deploy-lovelace-gate-undo-menu-item"
+                        disabled={fixBusy}
+                        onClick={() => void undoLastFix()}
+                        title={data.lovelaceUndoDescription ?? undefined}
+                      >
+                        Undo last fix
+                        {data.lovelaceUndoDescription ? (
+                          <span className="muted"> ({data.lovelaceUndoDescription})</span>
+                        ) : null}
+                      </button>
+                    )}
+                    {showRevertAllFixes && (
+                      <button
+                        type="button"
+                        className="deploy-lovelace-gate-undo-menu-item"
+                        disabled={fixBusy}
+                        onClick={() => void undoAllFixes()}
+                      >
+                        Revert all local fixes
+                      </button>
+                    )}
+                  </div>
+                </details>
+              ) : (
+                <span className="deploy-lovelace-gate-undo-placeholder" aria-hidden="true" />
+              )}
+            </div>
           </div>
-          <span
-            className="deploy-lovelace-gate-scan-inline"
-            aria-hidden={!backgroundScanning || busy}
-            title={backgroundScanning && !busy ? "Updating scan" : undefined}
+          {showReview ? entityListTabs : null}
+          <p
+            className={`entity-janitor-lead${invalidJsonIssue ? " entity-janitor-lead--json-error" : " muted"}`}
+            title={gateLead}
+            role={invalidJsonIssue ? "alert" : undefined}
           >
-            <span className={`deploy-lovelace-gate-scan-dot${backgroundScanning && !busy ? " is-active" : ""}`} />
-          </span>
-        </div>
-        <div className="deploy-lovelace-gate-undo-reserve">
-          {showUndoMenu ? (
-            <details className="deploy-lovelace-gate-undo-menu">
-              <summary className="btn secondary btn-compact">Undo</summary>
-              <div className="deploy-lovelace-gate-undo-menu-panel">
-                {data?.canUndoLovelaceFix && (
-                  <button
-                    type="button"
-                    className="deploy-lovelace-gate-undo-menu-item"
-                    disabled={fixBusy}
-                    onClick={() => void undoLastFix()}
-                    title={data.lovelaceUndoDescription ?? undefined}
-                  >
-                    Undo last fix
-                    {data.lovelaceUndoDescription ? (
-                      <span className="muted"> ({data.lovelaceUndoDescription})</span>
-                    ) : null}
-                  </button>
-                )}
-                {showRevertAllFixes && (
-                  <button
-                    type="button"
-                    className="deploy-lovelace-gate-undo-menu-item"
-                    disabled={fixBusy}
-                    onClick={() => void undoAllFixes()}
-                  >
-                    Revert all local fixes
-                  </button>
+            {invalidJsonIssue ? (
+              <>
+                <strong>{invalidJsonIssue}</strong>
+                {" Blocking vs awaiting counts use a text scan until JSON is repaired."}
+              </>
+            ) : (
+              gateLead
+            )}
+          </p>
+        </header>
+      ) : (
+        <>
+          <div className="deploy-lovelace-gate-toolbar">
+            <div className="deploy-lovelace-gate-toolbar-main">
+              <p className="deploy-lovelace-gate-toolbar-title">
+                <span>Entity Janitor</span>
+                <SectionAttentionBadge order={attentionOrder} />
+              </p>
+              <div className="deploy-lovelace-gate-toolbar-chips" aria-label="Issue counts">
+                <span className="deploy-lovelace-gate-chip">{blockingIssues.length} blocking</span>
+                <span className="deploy-lovelace-gate-chip">{deployMissingIssues.length} awaiting</span>
+                <span className="deploy-lovelace-gate-chip">{deferredIssues.length} deferred</span>
+                {showNamingTabUi && (
+                  <span className="deploy-lovelace-gate-chip">{prodNamingIssues.length} naming</span>
                 )}
               </div>
-            </details>
-          ) : layout === "workspace" ? (
-            <span className="deploy-lovelace-gate-undo-placeholder" aria-hidden="true" />
-          ) : null}
-        </div>
-      </div>
-      <p
-        className={`deploy-lovelace-gate-toolbar-lead${invalidJsonIssue ? " deploy-lovelace-gate-toolbar-lead--json-error" : " muted"}`}
-        title={gateLead}
-        role={invalidJsonIssue ? "alert" : undefined}
-      >
-        {invalidJsonIssue ? (
-          <>
-            <strong>{invalidJsonIssue}</strong>
-            {" Blocking vs awaiting counts use a text scan until JSON is repaired."}
-          </>
-        ) : (
-          gateLead
-        )}
-      </p>
+              <span
+                className="deploy-lovelace-gate-scan-inline"
+                aria-hidden={!backgroundScanning || busy}
+                title={backgroundScanning && !busy ? "Updating scan" : undefined}
+              >
+                <span className={`deploy-lovelace-gate-scan-dot${backgroundScanning && !busy ? " is-active" : ""}`} />
+              </span>
+            </div>
+            <div className="deploy-lovelace-gate-undo-reserve">
+              {showUndoMenu ? (
+                <details className="deploy-lovelace-gate-undo-menu">
+                  <summary className="btn secondary btn-compact">Undo</summary>
+                  <div className="deploy-lovelace-gate-undo-menu-panel">
+                    {data?.canUndoLovelaceFix && (
+                      <button
+                        type="button"
+                        className="deploy-lovelace-gate-undo-menu-item"
+                        disabled={fixBusy}
+                        onClick={() => void undoLastFix()}
+                        title={data.lovelaceUndoDescription ?? undefined}
+                      >
+                        Undo last fix
+                        {data.lovelaceUndoDescription ? (
+                          <span className="muted"> ({data.lovelaceUndoDescription})</span>
+                        ) : null}
+                      </button>
+                    )}
+                    {showRevertAllFixes && (
+                      <button
+                        type="button"
+                        className="deploy-lovelace-gate-undo-menu-item"
+                        disabled={fixBusy}
+                        onClick={() => void undoAllFixes()}
+                      >
+                        Revert all local fixes
+                      </button>
+                    )}
+                  </div>
+                </details>
+              ) : null}
+            </div>
+          </div>
+          <p
+            className={`deploy-lovelace-gate-toolbar-lead${invalidJsonIssue ? " deploy-lovelace-gate-toolbar-lead--json-error" : " muted"}`}
+            title={gateLead}
+            role={invalidJsonIssue ? "alert" : undefined}
+          >
+            {invalidJsonIssue ? (
+              <>
+                <strong>{invalidJsonIssue}</strong>
+                {" Blocking vs awaiting counts use a text scan until JSON is repaired."}
+              </>
+            ) : (
+              gateLead
+            )}
+          </p>
+        </>
+      )}
 
       <div className="deploy-lovelace-gate-workspace">
         {(busy || preflightBusy) && (
@@ -967,48 +1085,16 @@ export function DeployLovelaceGatePanel({
             className="deploy-lovelace-gate-review deploy-lovelace-gate-review--workspace"
             aria-hidden={isScanning ? true : undefined}
           >
-            <div className="deploy-lovelace-gate-lists-column">
-              <div className="deploy-lovelace-gate-list-tabs" role="tablist" aria-label="Entity issue lists">
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={listTab === "blocking"}
-                  className={`deploy-lovelace-gate-list-tab${listTab === "blocking" ? " active" : ""}`}
-                  onClick={() => setListTab("blocking")}
-                >
-                  Blocking ({blockingIssues.length})
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={listTab === "awaiting"}
-                  className={`deploy-lovelace-gate-list-tab${listTab === "awaiting" ? " active" : ""}`}
-                  onClick={() => setListTab("awaiting")}
-                >
-                  Awaiting ({deployMissingIssues.length})
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={listTab === "deferred"}
-                  className={`deploy-lovelace-gate-list-tab${listTab === "deferred" ? " active" : ""}`}
-                  onClick={() => setListTab("deferred")}
-                >
-                  Deferred ({deferredIssues.length})
-                </button>
-                {showNamingTabUi && (
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={listTab === "naming"}
-                    className={`deploy-lovelace-gate-list-tab${listTab === "naming" ? " active" : ""}`}
-                    onClick={() => setListTab("naming")}
-                  >
-                    Naming ({prodNamingIssues.length})
-                  </button>
-                )}
-              </div>
-              <div className="deploy-lovelace-gate-lists" ref={listsRef}>
+            <ResizableSplitPane
+              id="entity-janitor"
+              className="entity-janitor-split-pane ui-split-pane--inset"
+              defaultRatio={0.34}
+              minStartPx={240}
+              minEndPx={280}
+              start={
+                <div className="deploy-lovelace-gate-lists-column">
+              {layout !== "workspace" ? entityListTabs : null}
+              <div className="deploy-lovelace-gate-lists ui-master-detail-scroll" ref={listsRef}>
                 {listTab === "awaiting" && deployMissingIssues.length > 0 && (
                   <p className="muted deploy-lovelace-gate-tab-hint">
                     Fixed in your local draft — commit and push in the ship wizard to clear on deploy.
@@ -1107,11 +1193,12 @@ export function DeployLovelaceGatePanel({
                 )}
               </div>
             </div>
-
-            <div className="deploy-lovelace-gate-detail-column">
+              }
+              end={
+                <div className="deploy-lovelace-gate-detail-column">
               {listTab === "naming" && selectedNaming ? (
-                <div className="deploy-lovelace-gate-detail">
-                  <div className="deploy-lovelace-gate-detail-scroll">
+                <div className={`deploy-lovelace-gate-detail${layout === "workspace" ? " entity-janitor-detail-card" : ""}`}>
+                  <div className="deploy-lovelace-gate-detail-scroll ui-master-detail-scroll">
                     <ProdNamingIssueDetailBody
                       issue={selectedNaming}
                       fixBusy={fixBusy}
@@ -1127,8 +1214,8 @@ export function DeployLovelaceGatePanel({
                   </div>
                 </div>
               ) : listTab !== "naming" && selected ? (
-                <div className="deploy-lovelace-gate-detail">
-                  <div className="deploy-lovelace-gate-detail-scroll">
+                <div className={`deploy-lovelace-gate-detail${layout === "workspace" ? " entity-janitor-detail-card" : ""}`}>
+                  <div className="deploy-lovelace-gate-detail-scroll ui-master-detail-scroll">
                     <LovelaceIssueDetailBody
                       issue={selected}
                       isDeferred={selectedIsDeferred}
@@ -1160,13 +1247,17 @@ export function DeployLovelaceGatePanel({
                   </div>
                 </div>
               ) : (
-                <p className="muted deploy-lovelace-gate-detail-placeholder">
-                  {listTab === "naming"
-                    ? "Select a prod naming issue from the list."
-                    : "Select an issue from the list."}
-                </p>
+                <div className="entity-janitor-detail-empty">
+                  <p className="muted deploy-lovelace-gate-detail-placeholder">
+                    {listTab === "naming"
+                      ? "Select a prod naming issue from the list."
+                      : "Select an issue from the list to review fix steps and export migrations."}
+                  </p>
+                </div>
               )}
             </div>
+              }
+            />
           </div>
         )}
       </div>

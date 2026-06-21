@@ -33,9 +33,8 @@ const STATUS_INTENSITY_OPTIONS: { id: StatusIntensity; label: string }[] = [
 ];
 
 function SaveStatus({ state }: { state: "idle" | "saving" | "saved" | "error" }) {
-  if (state === "idle") return null;
-  const label =
-    state === "saving" ? "Saving…" : state === "saved" ? "Saved" : "Could not save — retry by changing a setting";
+  if (state === "idle" || state === "saved") return null;
+  const label = state === "saving" ? "Saving…" : "Could not save — retry by changing a setting";
   const className = state === "error" ? "msg err appearance-save-status" : "msg ok appearance-save-status";
   return <p className={className}>{label}</p>;
 }

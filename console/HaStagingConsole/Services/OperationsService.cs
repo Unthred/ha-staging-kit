@@ -456,7 +456,7 @@ public sealed class OperationsService(
 
     async Task<ProdStoragePreflightResult> RunPreflightProdStorageDeployCoreAsync(CancellationToken ct)
     {
-        using var scan = PreflightProgressStore.BeginScan(3);
+        using var scan = PreflightProgressStore.BeginScan(19);
         const string deployRef = "origin/main";
         PreflightProgressStore.Advance("Fetching latest from GitHub");
         var (fetchOk, _, fetchErr) = await RunGitBashAsync("git -C /repo fetch origin main 2>/dev/null", ct);
@@ -482,7 +482,6 @@ public sealed class OperationsService(
 
         ProdStoragePreflightResult result;
         // Operations workspace always runs the full git-vs-prod entity scan — not only when a release diff exists.
-        PreflightProgressStore.SetTotalSteps(19);
         result = WithUndoStatus(await storageDeploy.PreflightLovelaceBundleForPanelAsync(deployRef, ct));
         if (!lovelacePending && !z2mPending)
         {

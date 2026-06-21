@@ -132,7 +132,7 @@ export function MirrorControlModeToggle({
   if (resolvedLayout === "inline") {
     return (
       <div
-        className={`dash-env-stat dash-env-mirror-control ${controlOn ? "dash-env-mirror-control-on" : ""}${showLoading ? " dash-env-mirror-control-loading" : ""}`}
+        className={`dash-stat-card dash-env-stat dash-env-mirror-control ${controlOn ? "dash-env-mirror-control-on" : ""}${showLoading ? " dash-env-mirror-control-loading" : ""}`}
       >
         <span className="dash-stat-label">Control mode</span>
         {showLoading ? (

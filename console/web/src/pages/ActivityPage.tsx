@@ -8,6 +8,7 @@ import { useActivityStream } from "../hooks/useActivityStream";
 import { useActivityPulseMetrics } from "../hooks/useActivityPulseMetrics";
 import { useActivitySuggestions } from "../hooks/useActivitySuggestions";
 import { useHaUrls } from "../hooks/useHaUrls";
+import { ResizableSplitPane } from "../components/ResizableSplitPane";
 
 type InstanceFilter = "all" | "prod" | "staging";
 type DomainFilter = "all" | "automation" | "script" | "notify";
@@ -141,22 +142,31 @@ export default function ActivityPage() {
       <ActivitySyncConceptPicker events={events} parityFlash={pulseMetrics.parityFlash} />
 
       {viewMode === "split" ? (
-        <div className="activity-split">
-          <section className="card activity-panel">
+        <ResizableSplitPane
+          id="activity-prod-staging"
+          className="activity-split"
+          defaultRatio={0.5}
+          minStartPx={280}
+          minEndPx={280}
+          start={
+            <section className="card activity-panel">
             <header className="activity-panel-head">
               <h3>Production</h3>
               <span className="muted">{split.prod.length} events</span>
             </header>
             <ActivityFeed events={split.prod} paused={paused} />
           </section>
-          <section className="card activity-panel">
+          }
+          end={
+            <section className="card activity-panel">
             <header className="activity-panel-head">
               <h3>Staging</h3>
               <span className="muted">{split.staging.length} events</span>
             </header>
             <ActivityFeed events={split.staging} paused={paused} />
           </section>
-        </div>
+          }
+        />
       ) : (
         <section className="card activity-panel">
           <header className="activity-panel-head">
